@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f1110" />
+  <title>DartScan</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='11' fill='%23111'/%3E%3Ccircle cx='12' cy='12' r='7' fill='none' stroke='%23e0402f' stroke-width='2'/%3E%3Ccircle cx='12' cy='12' r='2.5' fill='%2322a05a'/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <button class="brand" id="btn-home" title="Startseite">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="5.5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/></svg>
+      <span>DartScan</span>
+    </button>
+    <span id="room-badge" class="room-badge hidden"></span>
+  </header>
+
+  <main>
+    <!-- Start -->
+    <section id="screen-home" class="screen">
+      <div class="hero">
+        <h1>Wirf. Wir zählen.</h1>
+        <p>Handy neben die Scheibe stellen, einmal kalibrieren – die Punkte werden automatisch erkannt.</p>
+      </div>
+      <div class="menu">
+        <button class="big" id="go-local"><b>Lokal spielen</b><small>Alle an einer Scheibe, 1–8 Spieler</small></button>
+        <button class="big" id="go-online"><b>Online gegeneinander</b><small>Jeder an seiner Scheibe, per Raum-Code</small></button>
+        <button class="big ghost" id="go-cam"><b>Kamera testen &amp; kalibrieren</b><small>Ohne Spiel ausprobieren</small></button>
+      </div>
+    </section>
+
+    <!-- Lokal einrichten -->
+    <section id="screen-local" class="screen hidden">
+      <h2>Lokales Spiel</h2>
+      <div class="card">
+        <label class="lbl">Spieler</label>
+        <div id="local-players"></div>
+        <button class="small ghost" id="add-player">+ Spieler hinzufügen</button>
+      </div>
+      <div class="card" id="local-settings"></div>
+      <button class="primary wide" id="start-local">Spiel starten</button>
+    </section>
+
+    <!-- Online -->
+    <section id="screen-online" class="screen hidden">
+      <h2>Online spielen</h2>
+      <div class="card">
+        <label class="lbl" for="on-name">Dein Name</label>
+        <input id="on-name" maxlength="16" placeholder="z. B. Domi" autocomplete="nickname" />
+      </div>
+      <div class="card">
+        <button class="primary wide" id="on-create">Neuen Raum erstellen</button>
+        <div class="or">oder</div>
+        <div class="row">
+          <input id="on-code" maxlength="4" placeholder="CODE" class="code-input" autocapitalize="characters" />
+          <button class="primary" id="on-join">Beitreten</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Lobby -->
+    <section id="screen-lobby" class="screen hidden">
+      <h2>Warteraum</h2>
+      <div class="card center">
+        <div class="lbl">Raum-Code</div>
+        <div id="lobby-code" class="lobby-code">----</div>
+        <button class="small ghost" id="copy-link">Einladungslink kopieren</button>
+      </div>
+      <div class="card">
+        <div class="lbl">Spieler</div>
+        <ul id="lobby-players" class="plist"></ul>
+      </div>
+      <div class="card" id="lobby-settings"></div>
+      <button class="primary wide" id="lobby-start">Spiel starten</button>
+      <p id="lobby-wait" class="muted center hidden">Warte, bis der Host das Spiel startet …</p>
+      <button class="small ghost wide" id="lobby-leave">Raum verlassen</button>
+    </section>
+
+    <!-- Spiel -->
+    <section id="screen-game" class="screen hidden">
+      <div id="scoreboard" class="scoreboard"></div>
+
+      <div class="turn card">
+        <div class="turn-head">
+          <span id="turn-name"></span>
+          <span id="turn-total" class="turn-total"></span>
+        </div>
+        <div id="turn-darts" class="darts"></div>
+        <div id="turn-info" class="turn-info"></div>
+      </div>
+
+      <div class="controls">
+        <button id="b-manual">Eingeben</button>
+        <button id="b-miss">Miss</button>
+        <button id="b-undo">↶ Zurück</button>
+        <button id="b-next" class="primary">Weiter ➜</button>
+      </div>
+
+      <div id="cam-slot"></div>
+      <div id="mini-board" class="mini-board"></div>
+    </section>
+
+    <!-- Nur Kamera -->
+    <section id="screen-cam" class="screen hidden">
+      <h2>Kamera &amp; Kalibrierung</h2>
+      <div id="cam-slot-test"></div>
+      <div class="card">
+        <div class="lbl">Letzte Treffer</div>
+        <div id="test-hits" class="darts wrap"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Kamera-Panel (wird zwischen Spiel- und Testansicht verschoben) -->
+  <div id="cam-panel" class="cam-panel">
+    <div class="cam-wrap">
+      <canvas id="cam-canvas"></canvas>
+      <div id="cam-off" class="cam-off">
+        <p>Kamera ist aus</p>
+        <button class="primary" id="b-cam-on">Kamera starten</button>
+      </div>
+      <div id="cam-hint" class="cam-hint hidden"></div>
+    </div>
+    <div class="cam-status"><span class="dot" id="cam-dot"></span><span id="cam-status">Kamera aus</span></div>
+    <div class="cam-tools" id="cam-tools">
+      <button id="b-calib">Kalibrieren</button>
+      <button id="b-debug">Debug</button>
+      <button id="b-settings">⚙</button>
+      <button id="b-cam-off">Kamera aus</button>
+    </div>
+    <div class="cam-tools hidden" id="calib-tools">
+      <button id="c-reset">Neu setzen</button>
+      <button id="c-cancel">Abbrechen</button>
+      <button id="c-done" class="primary" disabled>Fertig</button>
+    </div>
+  </div>
+  <video id="video" playsinline muted autoplay></video>
+
+  <!-- Eingabe-Dialog -->
+  <dialog id="dlg-input">
+    <form method="dialog" class="dlg">
+      <h3 id="in-title">Wurf eingeben</h3>
+      <div class="mult" id="in-mult">
+        <button type="button" data-m="1" class="on">Single</button>
+        <button type="button" data-m="2">Double</button>
+        <button type="button" data-m="3">Triple</button>
+      </div>
+      <div class="numgrid" id="in-grid"></div>
+      <div class="row3">
+        <button type="button" data-special="25">25</button>
+        <button type="button" data-special="bull">Bull</button>
+        <button type="button" data-special="miss">Miss</button>
+      </div>
+      <div class="row3">
+        <button type="button" id="in-delete" class="danger">Löschen</button>
+        <span></span>
+        <button value="cancel" class="ghost">Abbrechen</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Einstellungen -->
+  <dialog id="dlg-settings">
+    <form method="dialog" class="dlg">
+      <h3>Erkennung</h3>
+      <label class="lbl" for="s-thr">Empfindlichkeit <span id="s-thr-v"></span></label>
+      <input type="range" id="s-thr" min="12" max="60" step="1" />
+      <p class="muted small">Weiter links = empfindlicher. Wenn Fehltreffer durch Licht/Schatten kommen: nach rechts.</p>
+      <label class="lbl" for="s-tip">Wo ist die Pfeilspitze im Bild?</label>
+      <select id="s-tip">
+        <option value="auto">Automatisch (schmales Ende)</option>
+        <option value="lowest">Unteres Ende des Pfeils</option>
+        <option value="highest">Oberes Ende des Pfeils</option>
+      </select>
+      <label class="check"><input type="checkbox" id="s-voice" /> Punkte ansagen</label>
+      <label class="check"><input type="checkbox" id="s-autonext" /> Automatisch weiter, wenn Pfeile gezogen</label>
+      <div class="row3"><span></span><span></span><button value="ok" class="primary">OK</button></div>
+    </form>
+  </dialog>
+
+  <!-- Sieg -->
+  <dialog id="dlg-win">
+    <form method="dialog" class="dlg center">
+      <div class="trophy">🎯</div>
+      <h3 id="win-text"></h3>
+      <p id="win-sub" class="muted"></p>
+      <button type="button" class="primary wide" id="w-rematch">Revanche</button>
+      <button type="button" class="ghost wide" id="w-undo">Letzten Pfeil zurücknehmen</button>
+      <button type="button" class="ghost wide" id="w-home">Zur Startseite</button>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="board.js"></script>
+  <script src="game.js"></script>
+  <script src="detector.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
