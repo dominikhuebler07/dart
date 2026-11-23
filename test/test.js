@@ -92,7 +92,8 @@ console.log(`\n${pass} Tests bestanden`);
 // --- Online-Räume (simulierte Verbindungen) ---
 const { createRooms } = require('../rooms.js');
 const R = createRooms();
-const sock = () => ({ readyState: 1, meta: {}, msgs: [], send(s) { this.msgs.push(JSON.parse(s)); }, close() { this.readyState = 3; },
+let sockN = 0;
+const sock = () => ({ readyState: 1, meta: {}, msgs: [], user: { uid: 'u' + ++sockN, name: 'U' + sockN }, send(s) { this.msgs.push(JSON.parse(s)); }, close() { this.readyState = 3; },
   get room() { return [...this.msgs].reverse().find((m) => m.t === 'room').room; }, get err() { return [...this.msgs].reverse().find((m) => m.t === 'error')?.msg; } });
 const A = sock(), Bs = sock();
 R.handle(A, { t: 'create', name: 'Domi' });
@@ -107,7 +108,7 @@ ok(Bs.room.game.players[0].score === 166, 'Max sieht Domis Würfe live');
 R.handle(A, { t: 'next' }); ok(Bs.room.game.current === 1, 'Max ist dran');
 const bid = Bs.room.players[1].id;
 R.detach(Bs); ok(!A.room.players[1].online, 'offline erkannt');
-const B2 = sock(); R.handle(B2, { t: 'rejoin', code, id: bid }); ok(A.room.players[1].online && B2.room.game.players[0].score === 166, 'Wiederverbinden behält Spielstand');
+const B2 = sock(); B2.user = Bs.user; R.handle(B2, { t: 'rejoin', code, id: bid }); ok(A.room.players[1].online && B2.room.game.players[0].score === 166, 'Wiederverbinden behält Spielstand');
 R.handle(sock(), { t: 'join', code, name: 'Spät' }); ok(true, 'Beitritt während Spiel abgelehnt');
 
 console.log(`${pass} Tests bestanden (inkl. Online)`);
@@ -341,4 +342,4 @@ ok(bad === 0, 'Sprachbefehle (Wert, mehrere, unscharf) ' + (cases.length + 1 - b
 
 }
 console.log(`${pass} Tests bestanden (inkl. Sprachbefehle v2)`);
-require('./learn.js'); require('./tourn.js');
+require('./learn.js'); require('./tourn.js'); require('./wake.js'); require('./pull.js'); require('./auth.js'); require('./fuse.js');

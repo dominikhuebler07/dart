@@ -9,20 +9,64 @@ Dazu Statistik (Heatmap, Felder, Average, Doppelquote …), Konten per Google od
 | Datei | Inhalt |
 |---|---|
 | `server.js` | Express-Server (liefert die Seite aus) + WebSocket unter `/ws` |
-| `rooms.js` | Online-Räume: Code, Beitreten, Wiederverbinden, Spielzüge prüfen |
+| `rooms.js` | Online: Räume mit Freunden, Zufallsgegner, öffentliche Turniere, Live-Kamerabild, Melden, Aufgabe bei Abwesenheit |
+| `links.js` | Geräte koppeln: Fernseher/Laptop als Bildschirm, zweites Handy als 2. Kamera |
+| `auth.js` | Prüft die Firebase-Anmeldung auf dem Server (ohne Zusatzpaket) |
+| `reports.js` | Meldungen per E-Mail (Brevo) + Übersicht `/admin/meldungen` |
 | `public/game.js` | Spiellogik X01 (Bust, Double-Out, Undo, Checkout-Vorschläge), läuft im Browser und auf dem Server |
 | `public/board.js` | Scheibengeometrie (mm), Punkteberechnung, SVG-Scheibe |
 | `public/boardfinder.js` | Findet die Scheibe über die Farbringe (Auto-Kalibrierung, Nachführen), Kameramodell |
-| `public/detector.js` | Pfeilerkennung (Bild- und Farbvergleich, Pfeilspitze, Zoom) |
-| `public/app.js` | Spiel-Oberfläche, Kamera, Kalibrierung, Online-Client |
+| `public/detector.js` | Pfeilerkennung (Bild- und Farbvergleich, Pfeilspitze, Zoom, Pfeile-gezogen-Erkennung) |
+| `public/fuse.js` | Verrechnet die Treffer von zwei Kameras zu einem genaueren Punkt |
+| `public/app.js` | Spiel-Oberfläche, Kamera, automatische Scheibensuche, Lernpfad, Online-Client |
+| `public/link.js` | Geräte koppeln (Handy-Seite), Bildschirm-Modus, 2.-Kamera-Modus |
+| `public/learn.js` | Lernpfad: 32 Übungen in 5 Stufen (Karte), Fortschritt im Konto |
+| `public/qr.js` | QR-Code für den Koppel-Code am Bildschirm |
 | `public/ui.js` | Navigation, Statistik-Seite, Weltrangliste, Profil/Anmeldung |
 | `public/stats.js` | Statistik erfassen und auswerten |
-| `public/account.js` | Konten, Cloud-Speicher, Rangliste (Firebase) |
-| `public/firebase-config.js` | **Hier deine Firebase-Zugangsdaten eintragen** |
+| `public/account.js` | Konten, Cloud-Speicher (Statistik + Lernpfad), Rangliste (Firebase) |
+| `public/speech.js` / `voicecmd.js` | Ansage, Sprachbefehle („Hey DartScan“) |
+| `public/scrollrail.js` | Scroll-Streifen rechts (normal wischen, ohne das Kamerabild zu berühren) |
+| `public/firebase-config.js` | **Deine Firebase-Zugangsdaten** (nicht im ZIP, bleibt bei dir) |
 | `firestore.rules` | Sicherheitsregeln für die Datenbank (in Firebase einfügen) |
-| `test/test.js` | 61 Tests: Regeln, Online, Auto-Kalibrierung, Verrutschen, 3D-Pfeile, Statistik |
-| `test/synth.js` | Erzeugt künstliche Kamerabilder (Scheibe + 3D-Pfeile) für die Tests |
-| `test/bench.js` | Härtetest: realistische Szene mit Zahlenring, Metall-Halterungen, Erschütterung, Belichtungsschwankung, echter Pfeilform und 5 Handy-Positionen |
+| `test/` | `npm test`: Regeln, Erkennung, Pfeile ziehen, Online, Turniere, Kopplung, 2 Kameras, Anmeldung, Lernpfad, Sprachbefehle |
+
+## Neu in dieser Version
+
+- **Ansage-Knopf** (Lautsprecher) neben „Sprachbefehle“: Die Ansage startet immer aus und wird mit einem Tipp eingeschaltet. Erst dieser Tipp erlaubt dem Browser den Ton, deshalb ging sie früher erst nach dem Aus- und Einschalten.
+- **„Hey DartScan“** wird jetzt nach Klang erkannt: auch „Dartskind“, „Dartskin“, „Darts kann“, „Dart Skin“, „Darts Kinn“, „Datscan“ … „Das kann“ oder „Dort kann“ lösen dagegen nicht aus.
+- **Automatische Scheibensuche ohne Knopf:** Kamera an, dann wird die Scheibe gesucht und sofort übernommen. Im Spiel gibt es kein Kalibrieren von Hand mehr, nur „Scheibe neu suchen“. Wird die Scheibe verloren, sucht die App selbst weiter. Von Hand geht es nur noch unter **Kamera einrichten → Manuell**.
+- **Pfeile ziehen → nächster Spieler:** Das klappt jetzt auch nach 1 oder 2 Pfeilen. Es bleibt nicht mehr hängen, wenn nach dem Ziehen kleine Spuren bleiben (Löcher, Fasern), das Handy wackelt, sich das Licht ändert oder jemand beim Ziehen vor der Scheibe steht. Zieht man die Pfeile einzeln, entsteht kein falscher Extra-Pfeil mehr.
+- **Scroll-Streifen** rechts: ganz normal wischen, der Browser scrollt selbst.
+- **Konto nötig** für Online, Turniere und Lernpfad. Das lokale Spiel geht weiterhin ohne Anmeldung. Der Server prüft die Anmeldung selbst.
+- **Online gegen Fremde:**
+  - **Zufallsgegner:** 301 oder 501, sofort los, wer anfängt wird ausgelost.
+  - **Öffentliche Turniere:** Blitz 4 Spieler / 501-Cup 8 Spieler / Masters 16 Spieler. Sie starten automatisch, wenn das Feld voll ist, oder nach der Wartezeit mit Freilosen. Es gibt keinen Turnierleiter: Wer ca. 75 s offline ist oder 2½ Minuten nicht wirft, verliert das Match.
+- **Fair Play:**
+  - Online sieht man das **Live-Bild der Scheibe des Gegners**, inklusive Markierung des erkannten Treffers.
+  - **Melden** schickt dir eine E-Mail mit den letzten Kamerabildern und dem Spielverlauf.
+  - Fremde dürfen keine Pfeile des Gegners ändern.
+- **Lernpfad als Karte:**
+  - 32 Übungen statt 15, jede Stufe endet mit einer Prüfung.
+  - Neu dabei: 19er-Training, Shanghai, Doppel und Triple rund um die Uhr, Bob’s 27, 301 Single-Out, Finishes über 100 …
+  - Der Fortschritt wird im Konto gespeichert und auf allen Geräten abgeglichen. Alter Fortschritt bleibt erhalten.
+- **Geräte koppeln:**
+  - Fernseher oder Laptop zeigt Spielstand, Kamerabild und Trefferbild groß an, auf Wunsch auch mit Ansage über die Lautsprecher des Fernsehers. Gekoppelt wird per 5-stelligem Code oder QR-Code.
+  - Ein **zweites Handy als 2. Kamera**: Beide erkennen den Pfeil, das Haupt-Handy verrechnet beide Blickwinkel. Im Test (40 Würfe knapp neben Drähten) lagen beide Kameras zusammen deutlich öfter richtig als jede allein.
+
+### Einstellungen auf Render (Environment)
+
+| Variable | Wofür | Muss? |
+|---|---|---|
+| `FIREBASE_PROJECT_ID` | Projekt für die Anmeldeprüfung (Standard `dart-1f6be`) | nein |
+| `BREVO_API_KEY` | E-Mails bei Meldungen | für E-Mails ja |
+| `REPORT_TO` | Empfänger der Meldungen (Standard `dart.scan.dh@gmail.com`) | nein |
+| `REPORT_FROM` | Absender – muss in Brevo als Absender bestätigt sein (Standard wie `REPORT_TO`) | nein |
+| `ADMIN_KEY` | Passwort für die Übersicht `https://…/admin/meldungen?key=DEIN_PASSWORT` | nein |
+| `BANNED_UIDS` | Gesperrte Konten (Konto-IDs aus der Meldung, mit Komma getrennt) | nein |
+| `GOOGLE_TTS_KEY`, `TTS_VOICE` | Natürliche Server-Stimme (wie bisher) | nein |
+
+Wichtig: Turniere, Räume und Kopplungen liegen im Speicher des Servers. Bei einem Redeploy gehen laufende Spiele verloren, deshalb am besten nicht während eines Turniers hochladen.
 
 ## Lokal starten
 
@@ -85,7 +129,9 @@ Die Firebase-Werte aus Schritt 2 sind nicht geheim, sie dürfen öffentlich auf 
 3. Auf **Render** gehst du in deinem Dienst auf **Environment → Add Environment Variable**: `GOOGLE_TTS_KEY` = dein Schlüssel. Optional setzt du `TTS_VOICE`, z. B. `de-DE-Neural2-B` (männlich) oder `de-DE-Neural2-C` (weiblich).
 4. Nach dem Neustart erscheint unter ⚙ → Stimme „Google Neural (Server)“.
 
-**Sprachbefehle:** Tippe im Spiel oben links auf **Sprachbefehle** und erlaube das Mikrofon. Das funktioniert in Chrome und Edge. Unter dem Knopf siehst du live, was verstanden wurde.
+**Ansage:** Tippe im Spiel oben links auf den Lautsprecher (**Ansage aus/an**).
+
+**Sprachbefehle:** Tippe im Spiel oben auf **Sprachbefehle** und erlaube das Mikrofon. Das funktioniert in Chrome und Edge. Unter dem Knopf siehst du live, was verstanden wurde.
 - **Korrigieren nach Wert:** „Korrigiere 4 auf 18“. Mehrere geht auch: „Korrigiere 4 auf 18. Korrigiere 13 auf 1“ oder „Korrigiere 4 auf 18 und 13 auf 1“.
 - **Nach Position:** „Korrigiere den zweiten Pfeil auf Doppel 16“ oder „Korrigiere auf Triple 20“ (ändert den letzten Pfeil).
 - **Ohne „Dartcounter“:** Korrekturen mit „korrigiere … auf …“ klappen direkt, ohne Aktivierungswort. Aus der Entfernung ist das deutlich zuverlässiger. Abschalten kannst du das unter ⚙ → Sprachbefehle.
@@ -111,10 +157,10 @@ Die Firebase-Werte aus Schritt 2 sind nicht geheim, sie dürfen öffentlich auf 
 
 ## Kalibrieren – automatisch
 
-Tippe auf **Kalibrieren**. Die Seite sucht die Scheibe selbst über die roten und grünen Ringe und legt ein gelbes Raster darüber.
-- Steht die **20** nicht oben, tippst du einfach auf die echte 20, dann dreht sich das Raster.
-- Mit **Fertig** übernimmst du die Kalibrierung.
-- Findet die Automatik die Scheibe nicht (z. B. bei schlechtem Licht), wechselst du auf **Manuell** und tippst die 4 Punkte am äußeren Doppelring an: 20, 6, 3 und 11. Die Punkte rasten danach automatisch an den Ringen ein.
+Sobald die Kamera läuft, sucht die Seite die Scheibe selbst über die roten und grünen Ringe, ganz ohne Knopf, und legt ein gelbes Raster darüber.
+- Unter **Kamera einrichten**: Steht die **20** nicht oben, tippst du auf die echte 20, dann dreht sich das Raster. **Fertig** schließt die Einrichtung.
+- Findet die Automatik die Scheibe gar nicht (z. B. bei schlechtem Licht), gibt es nur dort **Manuell**: die 4 Punkte am äußeren Doppelring antippen (20, 6, 3, 11). Die Punkte rasten automatisch an den Ringen ein.
+- Im Spiel und im Lernpfad gibt es nur **Scheibe neu suchen**.
 
 ## Automatisches Nachführen
 
@@ -157,7 +203,7 @@ Wird die Scheibe gar nicht mehr gefunden (Handy umgefallen, verdeckt), pausiert 
 - **Misses automatisch zählen** (Standard: aus): Ohne Häkchen wird alles außerhalb des Doppelrings ignoriert. Einen echten Fehlwurf trägst du mit **Miss** ein.
 - **Raster automatisch nachführen** ist standardmäßig an.
 - Die Auswertung läuft mit bis zu 1280 Pixeln. Ist das Handy dafür zu langsam, regelt die App die Auflösung automatisch herunter.
-- Außerdem lassen sich die Sprachansage und das automatische Weiterschalten ein- und ausschalten.
+- Außerdem lässt sich das automatische Weiterschalten ein- und ausschalten (die Ansage über den Lautsprecher-Knopf im Spiel).
 - **Debug** zeigt die erkannte Veränderung rot im Kamerabild.
 
 ## Grenzen (1 Kamera)
@@ -174,16 +220,25 @@ In der Browser-Konsole liefert `DartScanDebug.detector.lastAnalyze` die Details 
 
 ## Online-Modus
 
-Ein Spieler erstellt einen Raum und teilt den 4-stelligen Code oder den Einladungslink.
-Jeder spielt an seiner eigenen Scheibe mit eigenem Handy.
-Nur das Handy des Spielers, der gerade dran ist, zählt mit. Die anderen sehen die Würfe live.
-Wenn die Verbindung abreißt, verbindet sich die Seite automatisch neu und der Spielstand bleibt erhalten.
+- **Mit Freunden:** Ein Spieler erstellt einen Raum und teilt den 4-stelligen Code oder den Einladungslink. Der Host startet.
+- **Zufallsgegner:** „Gegner suchen“ – sobald jemand anderes auch sucht, geht es los. Revanche nur, wenn beide zustimmen.
+- **Turniere:** siehe oben.
+
+Jeder spielt an seiner eigenen Scheibe mit eigenem Handy. Nur das Handy des Spielers, der gerade dran ist, zählt mit. Die anderen sehen die Würfe und das Kamerabild live. Wenn die Verbindung abreißt, verbindet sich die Seite automatisch neu und der Spielstand bleibt erhalten.
+
+## Geräte koppeln
+
+1. Am Fernseher oder Laptop DartScan öffnen → **Geräte koppeln** → **Dieses Gerät ist der Bildschirm**. Direkt geht es auch mit `…/?bildschirm` (Lesezeichen am Fernseher).
+2. Am Handy **Geräte koppeln** (oder im Spiel das Bildschirm-Symbol) → den Code eingeben. Alternativ den QR-Code am Bildschirm mit der Handykamera scannen.
+3. Fertig: Der Bildschirm zeigt Spielstand, Treffer und Kamerabild. Mit „Ton an“ sagt er auch die Punkte an.
+
+**Zweite Kamera:** Am zweiten Handy **Geräte koppeln → Dieses Handy ist die 2. Kamera**, auf die andere Seite der Scheibe stellen, Code am Haupt-Handy eingeben. Die Scheibe wird automatisch erkannt. Treffer, die beide Kameras sehen, werden verrechnet; in der Anzeige steht dann „2 Kameras“.
 
 ## Neu: Dartcoins, Lernmodus, Turniere
 
 - **Dartcoins** (`public/coins.js`): 1 Runde = 1 Coin (lokales Spiel, Online-Spiel, Lektion, Turnier-Match). In der Testphase unbegrenzt (`UNLIMITED = true`). Später auf `false` setzen und `earnByVideo()` mit dem Werbepartner verbinden.
-- **Lernmodus** (`public/learn.js`): 15 Lektionen in 5 Stufen (Anfänger → Profi) mit Zielen, Sternen und Coach-Tipps. Funktioniert mit Kamera oder Eingabe von Hand. Fortschritt wird im Browser gespeichert.
-- **Online-Turniere** (`rooms.js`): 2–16 Spieler, K.-o.-System mit Freilosen, 1 Leg / Best of 3 / Best of 5. Jedes Match läuft wie ein Online-Spiel; der Turnierbaum aktualisiert sich live. Der Turnierleiter kann ein Match kampflos vergeben, wenn jemand weg ist. Einladungslink: `?turnier=CODE`.
+- **Lernpfad** (`public/learn.js`): 32 Übungen in 5 Stufen als Karte, mit Zielen, Sternen und Coach-Tipps. Funktioniert mit Kamera oder Eingabe von Hand. Fortschritt im Konto.
+- **Öffentliche Turniere** (`rooms.js`): gegen Fremde, K.-o.-System mit Freilosen, Start automatisch, Aufgabe bei Abwesenheit.
 - **Sprachbefehle wie bei Siri:** „Hey DartScan, korrigiere 4 auf 18“, „Hey DartScan, weiter“, „Hey DartScan, zurück“. Nach „Hey DartScan“ allein kommt ein Signalton, dann darf der Befehl folgen.
-- **Scroll-Leiste** (`public/scrollrail.js`): rechts neben dem Kamerabild, damit man beim Kalibrieren scrollen kann, ohne auf das Bild zu tippen.
+- **Scroll-Streifen** (`public/scrollrail.js`): rechts, normal wischen.
 - Tests: `npm test` (inkl. Lernmodus und Turniere).

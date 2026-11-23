@@ -44,19 +44,23 @@
       <div class="tiles">
         <button class="tile" id="go-online">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>
-          <b>Online</b><small>Gegen Freunde per Raum-Code</small>
+          <b>Online</b><small>Zufallsgegner oder Freunde</small>
         </button>
         <button class="tile" id="go-learn">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9l9-5 9 5-9 5-9-5z"/><path d="M7 11.2V16c0 1.5 2.2 3 5 3s5-1.5 5-3v-4.8M21 9v6"/></svg>
-          <b>Lernen</b><small id="learn-tile-status">Vom Anfänger zum Profi</small>
+          <b>Lernpfad</b><small id="learn-tile-status">Vom Anfänger zum Profi</small>
         </button>
         <button class="tile" id="go-tourn">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h4v4H3zM3 15h4v4H3zM7 7h3v10H7M10 12h4M14 10h4v4h-4zM18 12h3"/></svg>
-          <b>Turnier</b><small>Online-Turnier mit K.-o.-Runden</small>
+          <b>Turniere</b><small id="tourn-tile-status">Gegen Spieler aus aller Welt</small>
         </button>
         <button class="tile" id="go-cam">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="3"/><circle cx="12" cy="12.5" r="3.5"/><path d="M8 6l1.5-2h5L16 6"/></svg>
           <b>Kamera</b><small id="cam-tile-status">Noch nicht eingerichtet</small>
+        </button>
+        <button class="tile wide-tile" id="go-devices">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="4" width="14" height="10" rx="1.5"/><path d="M6 18h6M9 14v4"/><rect x="17" y="8" width="5" height="10" rx="1.2"/></svg>
+          <b>Geräte koppeln</b><small id="devices-tile-status">Fernseher/Laptop als Bildschirm · 2. Handy als Kamera</small>
         </button>
       </div>
       <div id="home-stats" class="home-stats hidden"></div>
@@ -78,16 +82,36 @@
     <section id="screen-online" class="screen hidden">
       <h2>Online spielen</h2>
       <div class="panel">
-        <label class="field-label" for="on-name">Dein Name</label>
+        <label class="field-label" for="on-name">Dein Spielername</label>
         <input id="on-name" maxlength="16" placeholder="z. B. Domi" autocomplete="nickname" />
       </div>
       <div class="panel">
-        <button class="btn cta wide" id="on-create">Neuen Raum erstellen</button>
+        <h3>Gegen Zufallsgegner</h3>
+        <p class="muted small">Ein schnelles Spiel gegen jemanden, der gerade auch spielen will. Double-Out, wer anfängt, wird ausgelost.</p>
+        <div class="seg" id="q-score"><button data-v="301">301</button><button data-v="501" class="on">501</button></div>
+        <button class="btn cta wide" id="on-quick">Gegner suchen</button>
+        <button class="btn ghost wide" id="on-tourns">Zu den Turnieren</button>
+      </div>
+      <div class="panel">
+        <h3>Mit Freunden</h3>
+        <button class="btn wide" id="on-create">Neuen Raum erstellen</button>
         <div class="or">oder einem Raum beitreten</div>
         <div class="row">
           <input id="on-code" maxlength="4" placeholder="CODE" class="code-input" autocapitalize="characters" />
           <button class="btn" id="on-join">Beitreten</button>
         </div>
+      </div>
+      <p class="muted small center fair-note">Fair Play: Online sieht dein Gegner das Live-Bild deiner Scheibe, du seines. Wer schummelt, kann gemeldet werden.</p>
+    </section>
+
+    <!-- Gegner wird gesucht -->
+    <section id="screen-queue" class="screen hidden">
+      <div class="queue-box">
+        <svg class="queue-spin" viewBox="-50 -50 100 100" aria-hidden="true"><circle r="44" fill="none" stroke="var(--line)" stroke-width="6"/><path d="M0 -44 A44 44 0 0 1 44 0" fill="none" stroke="var(--red)" stroke-width="6" stroke-linecap="round"/><circle r="9" fill="var(--green)"/></svg>
+        <h2>Suche Gegner …</h2>
+        <p class="muted" id="queue-info">501 · Double-Out</p>
+        <p class="muted small">Tipp: Kamera schon jetzt einrichten – dann geht es sofort los.</p>
+        <button class="btn ghost wide" id="queue-cancel">Abbrechen</button>
       </div>
     </section>
 
@@ -112,11 +136,20 @@
     <!-- Spiel -->
     <section id="screen-game" class="screen hidden">
       <div class="game-head">
-        <button class="mic-btn hidden" id="b-mic" aria-pressed="false">
-          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
-          <span id="b-mic-label">Sprachbefehle</span>
-        </button>
+        <div class="head-btns">
+          <button class="mic-btn voice-btn" data-voice aria-pressed="false">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path class="wave" d="M15.5 9a4.2 4.2 0 0 1 0 6M18 6.5a7.8 7.8 0 0 1 0 11"/><path class="mute" d="M16 9.5l5 5M21 9.5l-5 5"/></svg>
+            <span data-voice-label>Ansage aus</span>
+          </button>
+          <button class="mic-btn hidden" id="b-mic" aria-pressed="false">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+            <span id="b-mic-label">Sprachbefehle</span>
+          </button>
+        </div>
         <button class="link hidden" id="b-tree">Turnierbaum</button>
+        <button class="icon-pill" id="b-link" aria-label="Geräte koppeln" title="Bildschirm / 2. Kamera koppeln">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="2" y="4" width="14" height="10" rx="1.5"/><path d="M6 18h6M9 14v4"/><rect x="17" y="8" width="5" height="10" rx="1.2"/></svg><i id="b-link-n"></i>
+        </button>
         <span id="game-mode" class="game-mode"></span>
       </div>
       <div id="mic-caption" class="mic-caption" aria-live="polite"></div>
@@ -138,22 +171,30 @@
         <button class="btn cta" id="b-next">Weiter</button>
       </div>
 
+      <div id="opp-cam" class="opp-cam hidden">
+        <div class="opp-head"><span id="opp-title">Live-Bild</span><button class="link danger-link" id="b-report">Melden</button></div>
+        <div class="opp-img"><img id="opp-img" alt="Live-Bild der Scheibe des Gegners" /><div id="opp-none" class="opp-none">Noch kein Kamerabild</div><span id="opp-dart" class="opp-dart"></span></div>
+      </div>
       <div id="cam-slot"></div>
       <div id="mini-board" class="mini-board"></div>
     </section>
 
     <!-- Lernmodus: Übersicht -->
     <section id="screen-learn" class="screen hidden">
-      <div class="screen-head"><h2>Lernmodus</h2></div>
+      <div class="screen-head"><h2>Lernpfad</h2></div>
       <div id="learn-body"></div>
     </section>
 
     <!-- Lernmodus: Lektion -->
     <section id="screen-learnplay" class="screen hidden">
       <div class="lp-head">
-        <button class="link" id="lp-back">‹ Übersicht</button>
-        <span id="lp-stage" class="lp-stage"></span>
+        <button class="link" id="lp-back">‹ Lernpfad</button>
+        <button class="mic-btn voice-btn" data-voice aria-pressed="false">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path class="wave" d="M15.5 9a4.2 4.2 0 0 1 0 6M18 6.5a7.8 7.8 0 0 1 0 11"/><path class="mute" d="M16 9.5l5 5M21 9.5l-5 5"/></svg>
+          <span data-voice-label>Ansage aus</span>
+        </button>
       </div>
+      <div id="lp-stage" class="lp-stage"></div>
       <h2 id="lp-title" class="lp-title"></h2>
       <div class="lp-target">
         <div class="lp-tlabel" id="lp-tlabel">Ziel</div>
@@ -173,46 +214,70 @@
       <details class="panel lp-coach" id="lp-coach" open><summary>Tipps vom Coach</summary><div id="lp-coach-body"></div></details>
     </section>
 
-    <!-- Turnier: erstellen / beitreten -->
+    <!-- Turniere: öffentliche Turniere gegen Fremde -->
     <section id="screen-tourn" class="screen hidden">
-      <h2>Online-Turnier</h2>
-      <div class="panel">
-        <label class="field-label" for="t-name">Dein Name</label>
-        <input id="t-name" maxlength="16" placeholder="z. B. Domi" autocomplete="nickname" />
-      </div>
-      <div class="panel">
-        <h3>Neues Turnier</h3>
-        <div class="seg" id="t-score"><button data-v="301">301</button><button data-v="501" class="on">501</button><button data-v="701">701</button></div>
-        <div class="seg" id="t-legs"><button data-v="1" class="on">1 Leg</button><button data-v="2">Best of 3</button><button data-v="3">Best of 5</button></div>
-        <div class="seg" id="t-out"><button data-v="true" class="on">Double-Out</button><button data-v="false">Single-Out</button></div>
-        <button class="btn cta wide" id="t-create">Turnier erstellen</button>
-        <div class="or">oder einem Turnier beitreten</div>
-        <div class="row">
-          <input id="t-code" maxlength="4" placeholder="CODE" class="code-input" autocapitalize="characters" />
-          <button class="btn" id="t-join">Beitreten</button>
-        </div>
-      </div>
-      <p class="muted small center">2 bis 16 Spieler · K.-o.-System · jedes Match läuft live mit Kamera wie ein Online-Spiel</p>
+      <h2>Turniere</h2>
+      <p class="muted">Spiel gegen Leute aus aller Welt. Sobald genug Spieler da sind, startet das Turnier automatisch – K.-o.-System, jedes Match live mit Kamera.</p>
+      <div id="t-list" class="t-list"></div>
+      <details class="panel t-rules"><summary>So funktioniert’s</summary>
+        <ul>
+          <li>Melde dich für ein Turnier an. Ist es voll, startet es nach 10 Sekunden. Sind nach der Wartezeit genug Spieler da, geht es auch ohne volles Feld los (mit Freilosen).</li>
+          <li>Dein Match beginnt automatisch, die App wechselt ins Spiel.</li>
+          <li>Wer länger als ca. 1 Minute weg ist oder 2½ Minuten nicht wirft, verliert das Match.</li>
+          <li>Ihr seht gegenseitig das Live-Bild der Scheibe. Bei Verdacht auf Schummeln: „Melden“.</li>
+        </ul>
+      </details>
     </section>
 
     <!-- Turnier: Warteraum + Turnierbaum -->
     <section id="screen-tlobby" class="screen hidden">
       <div class="screen-head"><h2 id="tl-title">Turnier</h2><span id="tl-mode" class="source"></span></div>
-      <div class="panel center" id="tl-codebox">
-        <div class="field-label">Turnier-Code</div>
-        <div id="tl-code" class="lobby-code">----</div>
-        <button class="btn ghost" id="tl-share">Einladungslink teilen</button>
-      </div>
       <div id="tl-status" class="tl-status"></div>
       <div class="panel" id="tl-players-panel">
         <h3>Spieler <span id="tl-count" class="muted"></span></h3>
         <ul id="tl-players" class="plist"></ul>
       </div>
       <div id="tl-bracket" class="bracket"></div>
-      <button class="btn cta wide" id="tl-start">Turnier starten</button>
       <button class="btn cta wide hidden" id="tl-play">Zu meinem Match</button>
-      <p id="tl-wait" class="muted center hidden">Warte, bis der Turnierleiter startet …</p>
       <button class="btn ghost wide" id="tl-leave">Turnier verlassen</button>
+    </section>
+
+    <!-- Geräte koppeln -->
+    <section id="screen-devices" class="screen hidden">
+      <h2>Geräte koppeln</h2>
+      <div class="panel">
+        <h3>Dieses Handy ist die Kamera</h3>
+        <p class="muted small">Am Fernseher, Laptop oder 2. Handy DartScan öffnen und dort „Bildschirm“ bzw. „2. Kamera“ wählen. Den Code, der dort steht, hier eingeben:</p>
+        <div class="row">
+          <input id="dv-code" maxlength="6" placeholder="CODE" class="code-input" autocapitalize="characters" autocomplete="off" />
+          <button class="btn cta" id="dv-join">Koppeln</button>
+        </div>
+        <ul id="dv-list" class="plist dv-list"></ul>
+      </div>
+      <div class="dv-choices">
+        <button class="tile" id="dv-display">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="4" width="20" height="13" rx="1.5"/><path d="M8 21h8M12 17v4"/></svg>
+          <b>Dieses Gerät ist der Bildschirm</b><small>Fernseher oder Laptop: zeigt Spielstand und Kamerabild groß an</small>
+        </button>
+        <button class="tile" id="dv-cam2">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="2"/><circle cx="12" cy="8" r="2.5"/><path d="M10 18h4"/></svg>
+          <b>Dieses Handy ist die 2. Kamera</b><small>Zweites Handy auf der anderen Seite der Scheibe – für noch genauere Treffer</small>
+        </button>
+      </div>
+    </section>
+
+    <!-- Zweite Kamera -->
+    <section id="screen-cam2" class="screen hidden">
+      <h2>2. Kamera</h2>
+      <div class="panel center" id="c2-codebox">
+        <div class="field-label">Code am Haupt-Handy eingeben</div>
+        <div id="c2-code" class="lobby-code">-----</div>
+        <p class="muted small">Haupt-Handy: Start → Geräte koppeln → Code eingeben</p>
+      </div>
+      <div id="c2-state" class="tl-status"></div>
+      <div id="cam-slot-cam2"></div>
+      <p class="muted small">Stell dieses Handy auf die <b>andere Seite</b> der Scheibe als das Haupt-Handy (z. B. eins links, eins rechts unten). Beide erkennen die Pfeile, das Haupt-Handy verrechnet beide Blickwinkel zu einem genaueren Treffer.</p>
+      <button class="btn ghost wide" id="c2-stop">Beenden</button>
     </section>
 
     <!-- Kamera einrichten / Training -->
@@ -300,7 +365,7 @@
       <button class="btn" id="b-cam-off">Kamera aus</button>
     </div>
     <div class="cam-tools hidden" id="calib-tools">
-      <button class="btn" id="c-auto">Automatisch</button>
+      <button class="btn" id="c-auto">Neu suchen</button>
       <button class="btn" id="c-manual">Manuell</button>
       <button class="btn" id="c-cancel">Abbrechen</button>
       <button class="btn cta" id="c-done" disabled>Fertig</button>
@@ -345,7 +410,7 @@
         <option value="highest">Immer oberes Ende des Pfeils</option>
       </select>
       <h3 class="dlg-sub">Ansage</h3>
-      <label class="check"><input type="checkbox" id="s-voice" /> Punkte ansagen</label>
+      <p class="muted small">Ein- und ausschalten mit dem Lautsprecher-Knopf oben im Spiel. Sie startet aus Sicherheitsgründen des Browsers immer ausgeschaltet.</p>
       <label class="field-label" for="s-voicesel">Stimme</label>
       <div class="row"><select id="s-voicesel"></select><button type="button" class="btn" id="s-voicetest">Testen</button></div>
       <p class="muted small" id="s-voicehint"></p>
@@ -382,6 +447,21 @@
     </form>
   </dialog>
 
+  <!-- Lernpfad: Übung ansehen -->
+  <dialog id="dlg-lesson">
+    <form method="dialog" class="dlg">
+      <div id="li-stage" class="li-stage"></div>
+      <h3 id="li-title"></h3>
+      <div class="lr-stars" id="li-stars"></div>
+      <p id="li-goal"></p>
+      <p id="li-best" class="muted small"></p>
+      <p class="li-tip"><b>Tipp:</b> <span id="li-tip"></span></p>
+      <p id="li-locked" class="muted center hidden">Schaff zuerst die Übung davor, dann geht es hier weiter.</p>
+      <button type="button" class="btn cta wide" id="li-start">Starten</button>
+      <button value="cancel" class="btn ghost wide">Zurück zur Karte</button>
+    </form>
+  </dialog>
+
   <!-- Lektion beendet -->
   <dialog id="dlg-learn">
     <form method="dialog" class="dlg center">
@@ -391,7 +471,7 @@
       <p id="lr-unlock" class="lr-unlock hidden"></p>
       <button type="button" class="btn cta wide" id="lr-next">Nächste Lektion</button>
       <button type="button" class="btn wide" id="lr-again">Nochmal</button>
-      <button type="button" class="btn ghost wide" id="lr-list">Zur Übersicht</button>
+      <button type="button" class="btn ghost wide" id="lr-list">Zur Karte</button>
     </form>
   </dialog>
 
@@ -407,6 +487,39 @@
     </form>
   </dialog>
 
+  <!-- Melden -->
+  <dialog id="dlg-report">
+    <form method="dialog" class="dlg">
+      <h3>Spieler melden</h3>
+      <p class="muted small" id="rp-who"></p>
+      <div class="rp-reasons" id="rp-reasons">
+        <label><input type="radio" name="rp" value="Würfe falsch gezählt" checked /> Würfe falsch gezählt / geschummelt</label>
+        <label><input type="radio" name="rp" value="Keine Kamera" /> Kamera aus oder Scheibe nicht im Bild</label>
+        <label><input type="radio" name="rp" value="Pfeile von Hand erfunden" /> Pfeile von Hand eingetragen, die nicht stimmen</label>
+        <label><input type="radio" name="rp" value="Beleidigender Name" /> Beleidigender Name</label>
+        <label><input type="radio" name="rp" value="Sonstiges" /> Sonstiges</label>
+      </div>
+      <textarea id="rp-text" maxlength="600" rows="3" placeholder="Was ist passiert? (freiwillig)"></textarea>
+      <p class="muted small">Wir schauen uns die letzten Kamerabilder und den Spielverlauf an. Falsche Meldungen können zur Sperre führen.</p>
+      <button type="button" class="btn cta wide" id="rp-send">Meldung senden</button>
+      <button value="cancel" class="btn ghost wide">Abbrechen</button>
+    </form>
+  </dialog>
+
+  <!-- Geräte koppeln (im Spiel) -->
+  <dialog id="dlg-link">
+    <form method="dialog" class="dlg">
+      <h3>Bildschirm / 2. Kamera</h3>
+      <p class="muted small">Am anderen Gerät DartScan öffnen → „Geräte koppeln“ → „Bildschirm“ oder „2. Kamera“. Den angezeigten Code hier eingeben:</p>
+      <div class="row">
+        <input id="lk-code" maxlength="6" placeholder="CODE" class="code-input" autocapitalize="characters" autocomplete="off" />
+        <button type="button" class="btn cta" id="lk-join">Koppeln</button>
+      </div>
+      <ul id="lk-list" class="plist dv-list"></ul>
+      <button value="cancel" class="btn ghost wide">Schließen</button>
+    </form>
+  </dialog>
+
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script src="board.js"></script>
@@ -415,6 +528,8 @@
   <script src="coins.js"></script>
   <script src="speech.js"></script>
   <script src="learn.js"></script>
+  <script src="fuse.js"></script>
+  <script src="qr.js"></script>
   <script src="voicecmd.js"></script>
   <script src="boardfinder.js"></script>
   <script src="detector.js"></script>
@@ -422,6 +537,7 @@
   <script type="module" src="account.js"></script>
   <script src="app.js"></script>
   <script src="ui.js"></script>
+  <script src="link.js"></script>
   <script src="scrollrail.js"></script>
 </body>
 </html>

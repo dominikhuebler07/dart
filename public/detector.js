@@ -654,8 +654,10 @@
     // Wird "Weiter" gedrückt, bevor die Pfeile gezogen sind, stecken sie noch in der Scheibe. Dann bleibt das
     // letzte Bild der LEEREN Scheibe gültig und die Erkennung wartet (ohne neue Würfe zu verpassen) aufs Ziehen.
     startTurn() {
+      const prevPts = this.turnPts || [];
       this.turnDarts = 0;
       this.turnBlobs = [];
+      this.turnPts = [];
       this.exclude = null;
       this.evaluated = true;
       this.phase = 'throw';
@@ -663,8 +665,8 @@
       this.ensureGray();
       const dirty = this.emptyRef && this.diff(this.cur, this.emptyRef, false).count > this.minPx() * 3;
       this.ref = this.snapRef();
-      if (dirty) { this.awaitClear = true; this.status('Pfeile ziehen …'); }
-      else { this.emptyRef = this.ref; this.awaitClear = false; }
+      if (dirty) { this.awaitClear = true; this.oldPts = (this.oldPts || []).concat(prevPts); this.status('Pfeile ziehen …'); }
+      else { this.emptyRef = this.ref; this.awaitClear = false; this.oldPts = null; }
     }
 
     // Aktuellen Zustand als Referenz übernehmen (z. B. nach manueller Eingabe)
@@ -707,8 +709,10 @@
       const wasLost = this.lost;
       this.lost = false;
       if (moved > 0.8 && r.quality > r.startScore + 0.01) {
-        this.setCalibration(r.pts.map(([x, y]) => [x / w, y / h]), !wasLost);
-        if (wasLost || !this.ref) { this.ref = this.snapRef(); this.emptyRef = this.ref; }
+        // Referenzbilder immer mitnehmen (auch nach "Scheibe verloren", z. B. wenn jemand beim Ziehen davorsteht):
+        // Das Bild der LEEREN Scheibe darf nicht durch ein Bild mit noch steckenden Pfeilen ersetzt werden.
+        this.setCalibration(r.pts.map(([x, y]) => [x / w, y / h]), true);
+        if (wasLost || !this.ref) { this.ref = this.snapRef(); if (!this.emptyRef || !this.dartsIn()) this.emptyRef = this.ref; }
         // Hat sich auf der Scheibe nichts geändert, Referenz gleich frisch übernehmen (exakter als umgerechnet)
         else if (fresh || this.diff(this.cur, this.ref, false).count < this.minPx()) {
           const same = this.emptyRef === this.ref;
@@ -720,11 +724,77 @@
         this.cb.onRealign && this.cb.onRealign({ moved, quality: r.quality, calib: this.calib });
         return { moved };
       }
-      if (wasLost) { this.ref = this.snapRef(); this.emptyRef = this.ref; this.cb.onRealign && this.cb.onRealign({ moved: 0, quality: r.quality, calib: this.calib }); }
+      if (wasLost) {
+        this.ref = this.snapRef();
+        if (!this.emptyRef || !this.dartsIn()) this.emptyRef = this.ref;
+        this.cb.onRealign && this.cb.onRealign({ moved: 0, quality: r.quality, calib: this.calib });
+      }
       return { moved: 0 };
     }
 
     minPx() { return Math.max(20, this.boardPx * 0.0005); }
+
+    // Stecken (vermutlich) noch Pfeile dieser Aufnahme in der Scheibe?
+    dartsIn() { return !!(this.turnDarts || this.awaitClear || this.phase === 'pull' || (this.emptyRef && this.ref && this.emptyRef !== this.ref)); }
+
+    // Punkte (in mm auf der Scheibe) eines erkannten Pfeils merken – damit wir später prüfen können, ob er gezogen ist.
+    // Scheibenkoordinaten überstehen ein Nachführen der Kalibrierung.
+    rememberDart(pix) {
+      if (!this.H || !pix || !pix.length) return;
+      const step = Math.max(1, Math.floor(pix.length / 260)), pts = [];
+      for (let k = 0; k < pix.length; k += step) {
+        const p = pix[k];
+        pts.push(applyH(this.H, ((p % this.w) + 0.5) / this.w, (((p / this.w) | 0) + 0.5) / this.h));
+      }
+      (this.turnPts || (this.turnPts = [])).push(pts);
+    }
+
+    // Sind alle Pfeile gezogen? Robust gegen langsame Lichtänderungen, leichtes Wackeln und kurz verdeckte Scheibe:
+    //  a) das Bild gleicht (fast) der leeren Scheibe, ODER
+    //  b) es ist der leeren Scheibe viel ähnlicher als dem Bild mit den Pfeilen, ODER
+    //  c) an allen Stellen, an denen Pfeile erkannt wurden, sieht die Scheibe wieder leer aus.
+    clearedCheck(points = this.turnPts, relative = true) {
+      if (!this.emptyRef || !this.ref) return { cleared: false };
+      const minPx = this.minPx();
+      const ex = this.exclude; this.exclude = null; // alte Pfeilbereiche hier NICHT ausblenden – genau die prüfen wir
+      const e = this.diff(this.cur, this.emptyRef, true);
+      const r = this.emptyRef === this.ref ? e : this.diff(this.cur, this.ref, true);
+      this.exclude = ex;
+      const out = { cleared: false, e, r, how: '' };
+      if (e.count < minPx * 2) { out.cleared = true; out.how = 'leer'; return out; }
+      if (relative && r !== e && r.count >= minPx * 3 && e.count < r.count * 0.35) { out.cleared = true; out.how = 'relativ'; return out; }
+      const known = points || [];
+      if (known.length && (points !== this.turnPts || known.length >= (this.turnDarts || 0))) {
+        const { w, h } = this;
+        let allGone = true;
+        for (const pts of known) {
+          let n = 0, empty = 0, moved = 0;
+          for (const [bx, by] of pts) {
+            const [u, v] = applyH(this.Hinv, bx, by);
+            const x = Math.round(u * w - 0.5), y = Math.round(v * h - 0.5);
+            if (x < 0 || y < 0 || x >= w || y >= h) continue;
+            const i = y * w + x;
+            if (!this.mask[i]) continue;
+            n++;
+            if (!e.bin[i]) empty++;
+            if (r.bin[i]) moved++;
+          }
+          if (n < 8) continue; // Pfeil liegt außerhalb des Bildes – zählt nicht dagegen
+          const fe = empty / n, fm = moved / n;
+          if (!(fe >= 0.7 || (fe >= 0.45 && fm >= 0.6))) { allGone = false; break; }
+        }
+        if (allGone && (relative ? e.count < Math.max(r.count * 1.5, minPx * 12) : e.count < minPx * 12)) { out.cleared = true; out.how = 'pfeile'; return out; }
+      }
+      return out;
+    }
+
+    // Scheibe ist frei: neue Referenzen, Zustand der Aufnahme zurücksetzen
+    markCleared() {
+      this.ref = this.snapRef();
+      this.emptyRef = this.ref;
+      this.awaitClear = false;
+      this.turnBlobs = []; this.turnPts = []; this.oldPts = null; this.exclude = null; this.turnDarts = 0;
+    }
 
     tick() {
       if (!this.ensureSize()) return;
@@ -1076,12 +1146,10 @@
       if (this.lost) return;
 
       if (this.phase === 'pull') {
-        const e = this.diff(this.cur, this.emptyRef, false);
-        if (e.count < minPx * 2) {
-          this.ref = this.snapRef();
-          this.emptyRef = this.ref;
-          this.awaitClear = false;
-          this.turnBlobs = []; this.exclude = null; this.turnDarts = 0;
+        const c = this.clearedCheck();
+        this.lastClear = c.how || (c.e ? `noch ${c.e.count} px` : '');
+        if (c.cleared) {
+          this.markCleared();
           this.status('Scheibe frei');
           this.cb.onCleared && this.cb.onCleared();
         } else {
@@ -1090,39 +1158,58 @@
         return;
       }
       if (this.phase !== 'throw') {
+        // Pause (z. B. Gegner ist dran): Referenz laufend übernehmen. Ist die Scheibe leer, auch das Leer-Bild –
+        // sonst veraltet es bei Lichtänderungen und das Ziehen wird später nicht mehr erkannt.
+        const same = this.emptyRef === this.ref;
         this.ref = this.snapRef();
+        if (same || !this.emptyRef) this.emptyRef = this.ref;
         this.status('Pausiert');
         return;
       }
 
       if (this.awaitClear && this.emptyRef) {
-        const e = this.diff(this.cur, this.emptyRef, true);
-        if (e.count < minPx * 2) {
+        // Pfeile der vorigen Aufnahme stecken noch. Wurde in dieser Aufnahme schon geworfen, nur streng prüfen.
+        const fresh = !this.turnDarts;
+        const c = this.clearedCheck(this.oldPts, fresh);
+        const e = c.e || this.diff(this.cur, this.emptyRef, true);
+        if (c.cleared) {
           // alte Pfeile gezogen -> ab jetzt normale Aufnahme
-          this.ref = this.snapRef(); this.emptyRef = this.ref; this.awaitClear = false;
-          this.turnBlobs = []; this.exclude = null;
+          this.awaitClear = false; this.oldPts = null;
+          if (fresh) this.markCleared();
+          else { this.ref = this.snapRef(); this.exclude = null; }
           this.status('Scheibe frei – wirf!');
           return;
         }
         // Stellen, die wieder wie die leere Scheibe aussehen (gezogene Pfeile), sind keine neuen Würfe
-        let c = 0;
-        for (let i = 0; i < d.bin.length; i++) { if (d.bin[i] && !e.bin[i]) d.bin[i] = 0; c += d.bin[i]; }
-        d.count = c;
+        let cnt = 0;
+        for (let i = 0; i < d.bin.length; i++) { if (d.bin[i] && !e.bin[i]) d.bin[i] = 0; cnt += d.bin[i]; }
+        d.count = cnt;
         if (d.count < minPx) { this.ref = this.snapRef(); this.status('Pfeile ziehen …'); return; }
       }
       if (d.count < minPx) {
-        this.ref = this.snapRef(); // kleine Licht-Schwankungen übernehmen
+        // kleine Licht-Schwankungen übernehmen (bei leerer Scheibe auch ins Leer-Bild)
+        const same = this.emptyRef === this.ref;
+        this.ref = this.snapRef();
+        if (same && !this.turnDarts && !this.awaitClear) this.emptyRef = this.ref;
         this.status('Bereit – wirf!');
         return;
       }
-      // Sieht die Scheibe wieder aus wie zu Beginn der Aufnahme? -> Pfeile wurden gezogen
-      if (this.emptyRef && this.emptyRef !== this.ref && this.diff(this.cur, this.emptyRef, false).count < minPx * 2) {
-        this.ref = this.snapRef();
-        this.emptyRef = this.ref;
-        this.turnBlobs = []; this.exclude = null; this.turnDarts = 0;
-        this.status('Scheibe frei');
-        this.cb.onCleared && this.cb.onCleared();
-        return;
+      // Pfeile (auch nur 1 oder 2) wieder gezogen? -> Aufnahme zu Ende
+      if (this.emptyRef && this.emptyRef !== this.ref && !this.awaitClear) {
+        const c = this.clearedCheck();
+        if (c.cleared && (this.turnDarts || c.how !== 'pfeile')) {
+          this.markCleared();
+          this.status('Scheibe frei');
+          this.cb.onCleared && this.cb.onCleared();
+          return;
+        }
+        // Stellen, die wieder wie die leere Scheibe aussehen, sind gezogene Pfeile – kein neuer Wurf
+        if (c.e) {
+          let cnt = 0;
+          for (let i = 0; i < d.bin.length; i++) { if (d.bin[i] && !c.e.bin[i]) d.bin[i] = 0; cnt += d.bin[i]; }
+          d.count = cnt;
+          if (d.count < minPx) { this.ref = this.snapRef(); this.status('Pfeil gezogen …'); return; }
+        }
       }
       if (d.count > maxPx) {
         this.ref = this.snapRef();
@@ -1187,6 +1274,7 @@
       if (!emitted.length) { this.status(`Ignoriert (${rejected[0]})`); return; }
       for (const e of emitted) {
         (this.turnBlobs || (this.turnBlobs = [])).push(e.pix);
+        this.rememberDart(e.pix);
         this.turnDarts = (this.turnDarts || 0) + 1;
         this.lastDebug.tip = [e.u, e.v];
         (this.lastDebug.tips || (this.lastDebug.tips = [])).push([e.u, e.v, Board.label(e.dart)]);

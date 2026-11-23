@@ -53,28 +53,45 @@
     }
     return prev[n];
   }
-  // „DartScan“ (gesprochen „Dart-Skän“) – so schreibt es die Spracherkennung oft: "Dart Scan", "Darts kann", "Datenscanner", "Dart Sken" …
+  // „DartScan“ (gesprochen „Dart-Skän“) – so schreibt es die Spracherkennung oft: "Dart Scan", "Darts kann", "Datenscanner",
+  // "Dartskind", "Dartskin", "Darts Kinn", "Dart Sken" … Deshalb vergleichen wir nach Klang statt nach Buchstaben.
   const WAKES = ['dartscan', 'dartskan', 'dartskän', 'dartskaen', 'dartsken', 'dartscanner', 'dartsscan', 'datenscanner', 'dartscen',
-    'dartcounter', 'dartscounter', 'dartcount', 'dartkounter'];
+    'dartskin', 'dartskind', 'dartscounter', 'dartcounter', 'dartcount', 'dartkounter'];
+  // Lautschrift light: gleich klingende Schreibweisen vereinheitlichen
+  function sound(w) {
+    return w.replace(/ä|ae/g, 'e').replace(/ö|oe/g, 'o').replace(/ü|ue/g, 'u').replace(/ß/g, 's')
+      .replace(/sch/g, 's').replace(/ck|c|q|g(?=[aeiou])/g, 'k').replace(/sg/g, 'sk').replace(/th/g, 't').replace(/dt/g, 't')
+      .replace(/ph/g, 'f').replace(/y/g, 'i').replace(/(.)\1+/g, '$1');
+  }
+  const WAKE_KEYS = WAKES.map(sound);
+  // Muster: "Dart(s)/Dat(s)/Tart(s)" + "sk"/"sc" + Vokal + kurzer Rest (kan, kin, kind, ken, kän, kanner, kounter …)
+  const WAKE_RE = /^[dt][aeo]h?(?:r[dt]?|[dt])s{1,2}k[aeiou]{1,2}[a-z]{0,4}$/;
+  const HEY_RE = /^(?:hey|hei|hai|he|ey|hallo|okay|ok|ok\.)$/;
+  // Ist dieses (zusammengezogene) Wort ein „DartScan“? strict = ohne „Hey“ davor
+  function isWake(joined, afterHey) {
+    if (joined.length < 6 || joined.length > 15) return false;
+    if (!/^[dtk]/.test(joined)) return false; // muss mit d/t/k beginnen (dart, tart, kart) – sonst zu viele Zufallstreffer
+    const k = sound(joined);
+    if (!k.includes('k')) return false; // „Scan/Skin/Kann“ hat immer einen k-Laut ("darts sind" ist kein Aktivierungswort)
+    if (/^[dt]/.test(k) && WAKE_RE.test(k)) return true;
+    const d = Math.min(...WAKE_KEYS.map((w) => lev(k, w)));
+    if (d <= (k.length >= 10 ? 3 : 1)) return true;
+    return afterHey && d <= 3; // nach „Hey“ großzügiger
+  }
   // Liefert die Position (Zeichen) direkt hinter dem Aktivierungswort oder -1
   function findWake(t) {
     const words = t.split(' ');
     let pos = 0;
     const starts = words.map((w) => { const s = pos; pos += w.length + 1; return s; });
-    let best = null;
     for (let i = 0; i < words.length; i++) {
-      let joined = '';
-      for (let k = i; k < Math.min(words.length, i + 3); k++) {
-        joined += words[k];
-        if (joined.length < 6 || joined.length > 15) continue;
-        // muss mit d/t/k (dart, tart, kart) beginnen – sonst zu viele Zufallstreffer
-        if (!/^[dtk]/.test(joined)) continue;
-        const d = Math.min(...WAKES.map((w) => lev(joined, w)));
-        const lim = joined.length >= 10 ? 3 : 1;
-        if (d <= lim && (!best || d < best.d)) best = { d, end: starts[k] + words[k].length };
+      const afterHey = i > 0 && HEY_RE.test(words[i - 1]);
+      // längste passende Zusammenziehung zuerst ("darts kind" vor "darts")
+      for (let k = Math.min(words.length, i + 3) - 1; k >= i; k--) {
+        const joined = words.slice(i, k + 1).join('').replace(/\./g, '');
+        if (isWake(joined, afterHey)) return starts[k] + words[k].length;
       }
     }
-    return best ? best.end : -1;
+    return -1;
   }
 
   // Feld aus Text, z. B. "triple 20", "doppel sechzehn", "bull", "daneben" -> {seg, mult} oder null
@@ -200,5 +217,5 @@
     return (d.mult === 3 ? 'Triple ' : d.mult === 2 ? 'Doppel ' : '') + d.seg;
   }
 
-  return { parse, parseCommand, parseCommands, parseField, normalize, label, findWake, matchDart };
+  return { parse, parseCommand, parseCommands, parseField, normalize, label, findWake, isWake, sound, matchDart };
 });

@@ -21,6 +21,10 @@
       out.y = Math.round(d.y * 10) / 10;
     }
     if (d && d.auto) out.auto = true;
+    if (d && d.fused) out.fused = true; // mit 2. Kamera verrechnet
+    // Richtung des Pfeils (für das Lernen aus Korrekturen) und Bildausschnitt-Nummer (Erkennungsprotokoll)
+    if (d && Array.isArray(d.bdir) && d.bdir.length === 2 && d.bdir.every(Number.isFinite)) out.bdir = [Math.round(d.bdir[0] * 1000) / 1000, Math.round(d.bdir[1] * 1000) / 1000];
+    if (d && Number.isInteger(d.cid)) out.cid = d.cid;
     return out;
   }
 

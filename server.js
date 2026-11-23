@@ -1,14 +1,17 @@
-// DartScan – Server: liefert die Website aus und verwaltet Online-Räume per WebSocket
+// DartScan – Server: liefert die Website aus und verwaltet Online-Spiele, Turniere und gekoppelte Geräte per WebSocket
 const express = require('express');
 const http = require('http');
 const path = require('path');
 const { WebSocketServer } = require('ws');
 const { createRooms } = require('./rooms.js');
+const { createLinks } = require('./links.js');
+const { createAuth } = require('./auth.js');
+const { createReports } = require('./reports.js');
 
 const PORT = process.env.PORT || 3000;
 const app = express();
 app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
-app.get('/health', (_req, res) => res.json({ ok: true, rooms: rooms.size }));
+app.get('/health', (_req, res) => res.json({ ok: true, rooms: rooms.size, tourns: tourns.size }));
 
 // ---------- Natürliche Stimme (optional): Google Cloud Text-to-Speech ----------
 // Auf Render unter "Environment" GOOGLE_TTS_KEY setzen (API-Schlüssel mit freigeschalteter Text-to-Speech-API).
@@ -46,24 +49,47 @@ app.get('/tts', async (req, res) => {
   }
 });
 
-const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
+// ---------- Meldungen (Fair Play): E-Mail über Brevo + Übersicht unter /admin/meldungen?key=ADMIN_KEY ----------
+const reports = createReports();
+app.get('/admin/meldungen', (req, res) => reports.page(req, res));
 
-const { rooms, handle, detach, sweep } = createRooms();
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 256 * 1024 });
+
+const auth = createAuth();
+const links = createLinks();
+const { rooms, tourns, handle, detach, sweep, tick } = createRooms({
+  onReport: (r) => reports.add(r),
+  relayToLinks: (ws, msg) => links.relay(ws, msg),
+});
 
 wss.on('connection', (ws) => {
   ws.meta = {};
   ws.isAlive = true;
   ws.on('pong', () => (ws.isAlive = true));
-  ws.on('message', (raw) => {
+  ws.on('message', async (raw) => {
     let m;
     try { m = JSON.parse(raw); } catch (_) { return; }
-    if (m && typeof m.t === 'string') handle(ws, m);
+    if (!m || typeof m.t !== 'string') return;
+    if (m.t === 'auth') {
+      // Anmeldung prüfen (Firebase-ID-Token). Danach weiß der Server sicher, welches Konto spielt.
+      try {
+        const u = await auth.verify(m.token);
+        ws.user = { uid: u.uid, name: String(m.name || u.name || '').slice(0, 24) };
+        ws.send(JSON.stringify({ t: 'authok', uid: u.uid }));
+      } catch (e) {
+        ws.user = null;
+        ws.send(JSON.stringify({ t: 'autherr', msg: e.message }));
+      }
+      return;
+    }
+    if (links.TYPES.has(m.t)) return links.handle(ws, m);
+    handle(ws, m);
   });
-  ws.on('close', () => detach(ws));
+  ws.on('close', () => { detach(ws); links.detach(ws); });
 });
 
-// Verbindungen prüfen + leere Räume nach 30 Min. löschen
+// Verbindungen prüfen, Turniere starten, Abwesende werten, alte Räume aufräumen
 setInterval(() => {
   for (const ws of wss.clients) {
     if (!ws.isAlive) { ws.terminate(); continue; }
@@ -71,6 +97,8 @@ setInterval(() => {
     ws.ping();
   }
   sweep();
+  links.sweep();
 }, 30000);
+setInterval(tick, 2000);
 
 server.listen(PORT, () => console.log(`DartScan läuft auf http://localhost:${PORT}`));

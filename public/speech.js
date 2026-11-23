@@ -6,7 +6,11 @@
   const LSget = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (_) { return d; } };
   const LSset = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} };
 
-  const state = Object.assign({ enabled: true, voice: 'auto', rate: 1.0 }, LSget('ds.speech', {}));
+  // Stimme und Tempo werden gespeichert. Ein/Aus NICHT: Browser erlauben Ton erst nach einem Tipp,
+  // deshalb startet die Ansage immer aus und wird mit dem Lautsprecher-Knopf (= Tipp) eingeschaltet.
+  const saved = LSget('ds.speech', {});
+  const state = { enabled: false, voice: saved.voice || 'auto', rate: saved.rate || 1.0 };
+  const persist = () => LSset('ds.speech', { voice: state.voice, rate: state.rate });
   let voices = [], cloud = { enabled: false, voice: '' };
   const queue = [];
   let busy = false, unlocked = false, lastEnd = 0;
@@ -139,7 +143,7 @@
 
   // Mehrere kurze Ansagen nacheinander (nie als ein Satz mit Punkt – sonst liest z. B. "3. 60" als "dritter 60")
   function say(parts, opts = {}) {
-    if (!state.enabled && !opts.force) return;
+    if (!state.enabled && !opts.test) return;
     const list = (Array.isArray(parts) ? parts : [parts]).map((p) => String(p).trim()).filter(Boolean);
     if (opts.interrupt) { queue.length = 0; if (synth && synth.speaking) synth.cancel(); alive.clear(); try { audio.pause(); } catch (_) {} busy = false; }
     // Rückstau vermeiden: ältere Ansagen verwerfen, wenn es sich staut
@@ -181,18 +185,43 @@
   };
   window.Sound = Sound;
 
+  // Einschalten MUSS direkt im Klick passieren: dann gibt der Browser Sprachausgabe und Audio frei.
+  function enable() {
+    state.enabled = true;
+    unlocked = false; unlock();
+    try {
+      if (synth) {
+        synth.cancel(); if (synth.paused) synth.resume();
+        loadVoices();
+        const u = new SpeechSynthesisUtterance('Ansage an');
+        const v = pickVoice();
+        if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'de-DE';
+        u.rate = state.rate;
+        synth.speak(u);
+      }
+    } catch (_) {}
+    alive.clear(); busy = false; queue.length = 0;
+    setTimeout(warmup, 300);
+  }
+  function disable() {
+    state.enabled = false;
+    queue.length = 0;
+    try { if (synth) synth.cancel(); audio.pause(); } catch (_) {}
+    alive.clear(); busy = false;
+  }
+
   window.Speech = {
-    say,
+    say, enable, disable,
     get speaking() { return busy || Date.now() - lastEnd < 500; },
     get enabled() { return state.enabled; },
-    set enabled(v) { state.enabled = !!v; LSset('ds.speech', state); },
+    set enabled(v) { if (v) enable(); else disable(); },
     get voice() { return state.voice; },
-    set voice(v) { state.voice = v; LSset('ds.speech', state); },
+    set voice(v) { state.voice = v; persist(); },
     get rate() { return state.rate; },
-    set rate(v) { state.rate = v; LSset('ds.speech', state); },
+    set rate(v) { state.rate = v; persist(); },
     get cloud() { return cloud; },
     voices() { loadVoices(); return voices.map((v) => ({ id: v.voiceURI || v.name, name: v.name, natural: rank(v) >= 80 })); },
     currentName() { return useCloud() ? 'Google Neural (Server)' : (pickVoice() || { name: 'Standardstimme' }).name; },
-    test() { say(['Triple 20', 'Hundertachtzig!'], { force: true, interrupt: true }); },
+    test() { unlocked = false; unlock(); say(['Triple 20', 'Hundertachtzig!'], { test: true, interrupt: true }); },
   };
 })();

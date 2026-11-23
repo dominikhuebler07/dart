@@ -14,7 +14,7 @@
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
   const settings = Object.assign(
-    { threshold: 28, tipMode: 'auto', voice: true, autoNext: true, startScore: 501, doubleOut: true, name: '' },
+    { threshold: 28, tipMode: 'auto', autoNext: true, startScore: 501, doubleOut: true, name: '' },
     LS.get('ds.settings', {})
   );
   const saveSettings = () => LS.set('ds.settings', settings);
@@ -39,25 +39,42 @@
   }
 
   // Sprachausgabe (speech.js): mehrere kurze Ansagen nacheinander, natürlichste verfügbare Stimme
+  // Die Ansage startet immer AUS und wird mit dem Lautsprecher-Knopf eingeschaltet (der Tipp gibt den Ton im Browser frei).
   function speak(parts, opts) {
-    if (!settings.voice || !window.Speech) return;
+    hooks.speak.forEach((fn) => { try { fn(parts); } catch (_) {} }); // auch am gekoppelten Bildschirm ansagen
+    if (!window.Speech || !window.Speech.enabled) return;
     window.Speech.say(parts, opts);
   }
+  function renderVoiceBtns() {
+    const on = !!(window.Speech && window.Speech.enabled);
+    $$('[data-voice]').forEach((b) => { b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); });
+    $$('[data-voice-label]').forEach((l) => (l.textContent = on ? 'Ansage an' : 'Ansage aus'));
+  }
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-voice]');
+    if (!b || !window.Speech) return;
+    if (window.Speech.enabled) { window.Speech.disable(); toast('Ansage aus'); }
+    else window.Speech.enable(); // spricht sofort „Ansage an“ – direkt im Tipp, sonst blockiert der Browser
+    renderVoiceBtns();
+  });
   const say = (d) => (window.VoiceCmd ? window.VoiceCmd.label(d) : B.speech(d));
 
   function show(name) {
     screen = name;
     $$('.screen').forEach((s) => s.classList.toggle('hidden', s.id !== 'screen-' + name));
-    const slot = name === 'game' ? $('#cam-slot') : name === 'cam' ? $('#cam-slot-test') : name === 'learnplay' ? $('#cam-slot-learn') : null;
+    const slot = name === 'game' ? $('#cam-slot') : name === 'cam' ? $('#cam-slot-test') : name === 'learnplay' ? $('#cam-slot-learn') : name === 'cam2' ? $('#cam-slot-cam2') : null;
     const panel = $('#cam-panel');
     if (slot) { slot.appendChild(panel); panel.classList.remove('hidden'); }
     else panel.classList.add('hidden');
     $('#room-badge').classList.toggle('hidden', !((mode === 'online' && room) || tourn));
     if (tourn) $('#room-badge').textContent = 'T·' + tourn.code;
     else if (room) $('#room-badge').textContent = room.code;
+    document.body.classList.toggle('has-badge', !$('#room-badge').classList.contains('hidden'));
     $('#b-tree').classList.toggle('hidden', !(room && room.tourn));
+    $('#b-calib').textContent = name === 'cam' ? 'Kalibrieren' : 'Scheibe neu suchen';
+    if (name !== 'cam' && calib) stopCalibration();
     // Tab-Leiste: im Spiel ausgeblendet (volle Konzentration), sonst passenden Tab markieren
-    const tab = { home: 'home', local: 'home', online: 'home', lobby: 'home', cam: 'home', learn: 'home', learnplay: 'home', tourn: 'home', tlobby: 'home', stats: 'stats', rank: 'rank', profile: 'profile' }[name];
+    const tab = { home: 'home', local: 'home', online: 'home', queue: 'home', lobby: 'home', cam: 'home', learn: 'home', learnplay: 'home', tourn: 'home', tlobby: 'home', devices: 'home', cam2: 'home', stats: 'stats', rank: 'rank', profile: 'profile' }[name];
     document.body.classList.toggle('in-game', name === 'game' || name === 'learnplay');
     $$('#tabbar button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
     window.scrollTo(0, 0);
@@ -65,7 +82,7 @@
   }
 
   // Schnittstelle für ui.js (Statistik, Rangliste, Profil)
-  const hooks = { update: [], show: [], home: [] };
+  const hooks = { update: [], show: [], home: [], learn: [], speak: [] };
   window.DS = {
     hooks, settings, saveSettings, toast, esc, LS, show: (n) => show(n),
     get game() { return game; }, get mode() { return mode; }, get myId() { return myId; }, get room() { return room; },
@@ -282,7 +299,7 @@
   function chipHTML(d, i, clickable) {
     if (!d) return `<div class="chip">–</div>`;
     const cls = ['chip', 'filled', d.mult === 2 ? 'd' : d.mult === 3 ? 't' : '', d.void ? 'void' : ''].join(' ');
-    return `<div class="${cls}" data-i="${i}" ${clickable ? 'role="button" tabindex="0" title="Korrigieren"' : ''}>${B.label(d)}<small>${d.auto ? 'Kamera' : 'von Hand'}</small></div>`;
+    return `<div class="${cls}" data-i="${i}" ${clickable ? 'role="button" tabindex="0" title="Korrigieren"' : ''}>${B.label(d)}<small>${d.fused ? '2 Kameras' : d.auto ? 'Kamera' : 'von Hand'}</small></div>`;
   }
 
   function renderTurn() {
@@ -363,16 +380,19 @@
     const st = Game.stats(game, idx);
     $('#win-text').textContent = `${w.name} gewinnt!`;
     $('#win-sub').textContent = `${st.darts} Pfeile · Ø ${st.avg.toFixed(1)}`;
-    const host = mode !== 'online' || (room && room.hostId === myId);
+    const ff = mode === 'online' && room && room.forfeit;
+    if (ff) { const lo = game.players.find((p) => p.id === ff.loser); $('#win-sub').textContent = `${lo ? lo.name : 'Gegner'}: ${ff.why}`; }
+    const quick = mode === 'online' && room && room.kind === 'quick';
+    const host = mode !== 'online' || quick || (room && room.hostId === myId);
     $('#w-rematch').disabled = !host;
-    $('#w-rematch').textContent = host ? 'Revanche' : 'Warte auf Revanche vom Host …';
+    $('#w-rematch').textContent = quick ? 'Revanche anbieten' : host ? 'Revanche' : 'Warte auf Revanche vom Host …';
     if (room && room.tourn) {
       const legs = w.legs + 1, need = room.legsToWin || 1;
       $('#win-sub').textContent += legs >= need ? ' · Match entschieden!' : ` · Leg ${legs}/${need} – nächstes Leg startet gleich …`;
       $('#w-rematch').classList.add('hidden');
       $('#w-home').textContent = 'Zum Turnierbaum';
     } else { $('#w-rematch').classList.remove('hidden'); $('#w-home').textContent = 'Zur Startseite'; }
-    $('#w-undo').classList.toggle('hidden', !canEdit());
+    $('#w-undo').classList.toggle('hidden', !canEdit() || !!ff);
     if (!dlg.open) dlg.showModal();
   }
   $('#w-rematch').onclick = () => { $('#dlg-win').close(); act.rematch(); };
@@ -561,7 +581,6 @@
     $('#s-thr').value = settings.threshold;
     $('#s-thr-v').textContent = settings.threshold;
     $('#s-tip').value = settings.tipMode;
-    $('#s-voice').checked = settings.voice;
     $('#s-autonext').checked = settings.autoNext;
     $('#s-track').checked = settings.autoTrack !== false;
     $('#s-automiss').checked = settings.autoMiss === true;
@@ -573,7 +592,6 @@
   };
   $('#s-thr').oninput = (e) => { settings.threshold = Number(e.target.value); $('#s-thr-v').textContent = settings.threshold; detector.threshold = settings.threshold; saveSettings(); };
   $('#s-tip').onchange = (e) => { settings.tipMode = e.target.value; detector.tipMode = settings.tipMode; saveSettings(); };
-  $('#s-voice').onchange = (e) => { settings.voice = e.target.checked; saveSettings(); };
   function renderVoices() {
     const S = window.Speech;
     if (!S) return;
@@ -590,6 +608,7 @@
       : 'Auf diesem Gerät gibt es keine natürliche deutsche Stimme. Tipp: In Edge gibt es „Katja (Natural)“, am iPhone unter Einstellungen → Bedienungshilfen → Gesprochene Inhalte → Stimmen eine „Premium“-Stimme laden.';
   }
   $('#s-voicesel').onchange = (e) => { window.Speech.voice = e.target.value; window.Speech.test(); };
+  window.DS.renderVoiceBtns = () => renderVoiceBtns();
   $('#s-rate').oninput = (e) => { window.Speech.rate = Number(e.target.value); };
   $('#s-voicetest').onclick = () => window.Speech.test();
   $('#s-direct').onchange = (e) => { settings.voiceDirect = e.target.checked; saveSettings(); };
@@ -603,16 +622,16 @@
   };
 
   // ---------- Erkennung ----------
-  let lastTip = null;
+  let lastTip = null, lostSince = 0;
   const detector = new D.DartDetector({
     onDart(d, info) {
-      lastTip = { u: info.u, v: info.v, t: Date.now(), label: B.label(d) };
-      if (mode === 'test') { testHits.push(d); renderTestHits(); speak(say(d)); return; }
-      if (mode === 'learn') { learnDart(d); return; }
-      if (!game || game.finished || !myTurn() || Game.turnComplete(game)) return;
-      act.dart(d);
+      if (mode === 'cam2') { window.DS.cam2Dart && window.DS.cam2Dart(d, info); lastTip = { u: info.u, v: info.v, t: Date.now(), label: B.label(d) }; return; }
+      // mit 2. Kamera: kurz auf deren Treffer warten und beide verrechnen
+      if (window.DS.fuse && window.DS.fuse.active()) { window.DS.fuse.main(d, info); return; }
+      acceptDart(d, info);
     },
     onCleared() {
+      if (mode === 'cam2') return;
       if (mode === 'test') { testHits = []; renderTestHits(); return; }
       if (mode === 'learn') { if (lsess && lsess.cur.length && !lsess.st.finished) learnNext(); return; }
       if (!game || game.finished || !myTurn()) return;
@@ -623,16 +642,29 @@
     onStatus(s) { setCamStatus(s); },
     onLargeChange() { /* z. B. Licht geändert */ },
     onRealign(r) {
+      lostSince = 0;
       saveCalib();
       if (r.moved > 2) toast('Kamera verrutscht – Raster automatisch nachgeführt ✓');
     },
-    onLost() { toast('Scheibe nicht mehr gefunden – Handy prüfen oder neu kalibrieren', 4500); },
+    onLost() { lostSince = Date.now(); toast('Scheibe nicht mehr gefunden – ich suche sie automatisch …', 4000); },
     onShift() { saveCalib(); }, // kleine Erschütterung ausgeglichen
     onBias(b) {
       saveCalib();
       toast(`Aus deinen Korrekturen gelernt: Pfeilspitze wird jetzt ${Math.abs(b).toFixed(1).replace('.', ',')} mm weiter ${b > 0 ? 'vorne' : 'hinten'} gesucht`, 5000);
     },
   });
+  // Erkannter (ggf. mit der 2. Kamera verrechneter) Pfeil wird gezählt
+  function acceptDart(d, info) {
+    if (!info && Number.isFinite(d.x)) { const p = detector.toImage(d.x, d.y); if (p) info = { u: p[0], v: p[1] }; }
+    if (info) lastTip = { u: info.u, v: info.v, t: Date.now(), label: B.label(d) + (d.fused ? ' ²' : '') };
+    if (mode === 'test') { testHits.push(d); renderTestHits(); speak(say(d)); return; }
+    if (mode === 'learn') { learnDart(d); return; }
+    if (!game || game.finished || !myTurn() || Game.turnComplete(game)) return;
+    act.dart(d);
+    window.DS.frameDart && window.DS.frameDart(B.label(d));
+  }
+  window.DS.acceptDart = acceptDart;
+  window.DS.turnKey = () => lastTurnKey;
   detector.threshold = settings.threshold;
   detector.tipMode = settings.tipMode;
   detector.autoTrack = settings.autoTrack !== false;
@@ -655,6 +687,7 @@
   })();
 
   function syncDetector() {
+    if (mode === 'cam2') return; // die 2. Kamera steuert das Haupt-Handy
     if (mode === 'test') { if (detector.phase !== 'throw') detector.startTurn(); return; }
     if (mode === 'learn') {
       if (!lsess || lsess.st.finished) { detector.phase = 'idle'; return; }
@@ -726,7 +759,11 @@
     draw();
     // Belichtung/Weißabgleich/Fokus nach kurzer Eingewöhnung fixieren: verhindert Helligkeitssprünge zwischen den Würfen
     if (settings.lockCam !== false) setTimeout(() => { if (stream) lockCamera(true); }, 2500);
-    if (!detector.H) { lastStatusText = 'Kalibrierung …'; setTimeout(startCalibration, 400); }
+    if (!detector.H) {
+      lastStatusText = 'Suche die Scheibe …';
+      if (mode === 'test') setTimeout(startCalibration, 300); // Kamera einrichten: mit Anzeige
+      // in Spiel und Lernen sucht autoSearch() im Hintergrund und übernimmt die Scheibe direkt
+    }
     else { lastStatusText = 'Bereit'; setTimeout(() => showQuality(false), 1500); }
     setCamStatus();
     if (game) syncDetector();
@@ -772,7 +809,14 @@
   $('#b-cam-on').onclick = camOn;
   $('#b-cam-off').onclick = camOff;
   $('#b-debug').onclick = () => { debug = !debug; $('#b-debug').classList.toggle('on', debug); };
-  $('#b-calib').onclick = async () => { if (await camOn()) startCalibration(); };
+  // In Spiel/Lernen gibt es kein Kalibrieren von Hand: der Knopf sucht die Scheibe einfach automatisch neu.
+  $('#b-calib').onclick = async () => {
+    if (!(await camOn())) return;
+    if (mode === 'test') return startCalibration();
+    searchNow = true;
+    setCamStatus('Suche die Scheibe …');
+    toast('Suche die Scheibe …');
+  };
 
   // ---------- Zoom ----------
   // Zustand bezogen aufs Kamerabild OHNE Hardware-Zoom: z = Gesamtzoom, cx/cy = Mitte des Ausschnitts (0..1)
@@ -963,35 +1007,18 @@
   let calib = null;
   const pct = (q) => Math.round(Math.min(1, q / 0.45) * 100);
 
+  // Kamera einrichten: Die Scheibe wird ohne Knopfdruck laufend gesucht und sofort übernommen.
+  // Steht die 20 nicht oben, tippt man auf die echte 20. Von Hand (4 Punkte) geht es nur hier.
   function startCalibration() {
-    calib = { pts: [], drag: -1, mode: 'search', quality: null };
+    calib = { pts: [], drag: -1, mode: 'search', quality: null, since: Date.now() };
     updateTouch();
     $('#cam-tools').classList.add('hidden');
     $('#calib-tools').classList.remove('hidden');
-    runAutoCalib(0);
-  }
-  function runAutoCalib(attempt) {
-    if (!calib) return;
-    calib.mode = 'search';
-    calib.pts = [];
     updateCalibHint();
-    setTimeout(() => {
-      if (!calib) return;
-      const r = detector.autoCalibrate();
-      if (r) {
-        calib.pts = r.pts; calib.quality = r.quality; calib.mode = 'review';
-      } else if (attempt < 6 && !detector.rgba) {
-        return runAutoCalib(attempt + 1); // Kamera liefert noch kein Bild
-      } else {
-        calib.mode = 'manual';
-        toast('Scheibe nicht automatisch gefunden – bitte die 4 Punkte antippen', 4000);
-      }
-      updateCalibHint();
-    }, attempt ? 400 : 60);
   }
   function startManual() {
     calib = calib || { drag: -1 };
-    calib.pts = []; calib.mode = 'manual'; calib.quality = null;
+    calib.pts = []; calib.mode = 'manual'; calib.quality = null; calib.snapped = false;
     updateCalibHint();
   }
   // Wischen über das Kamerabild scrollt die Seite – außer beim Kalibrieren und wenn gezoomt (dann verschiebt es den Ausschnitt)
@@ -1006,28 +1033,75 @@
   function updateCalibHint() {
     const h = $('#cam-hint');
     h.classList.remove('hidden');
-    if (calib.mode === 'search') h.innerHTML = 'Suche die Scheibe …';
-    else if (calib.mode === 'review') h.innerHTML = `Scheibe erkannt ✓ (${pct(calib.quality)} %). Steht die <b>20</b> richtig? Sonst <b>tippe auf die echte 20</b>. Dann <b>Fertig</b>.`;
+    const slow = calib.mode === 'search' && Date.now() - (calib.since || 0) > 9000;
+    if (calib.mode === 'search') h.innerHTML = slow
+      ? 'Suche die Scheibe … Tipp: Licht an, ganze Scheibe ins Bild. Klappt es gar nicht, tippe auf <b>Manuell</b>.'
+      : 'Suche die Scheibe …';
+    else if (calib.mode === 'review') h.innerHTML = `Scheibe erkannt ✓ (${pct(calib.quality)} %). Steht die <b>20</b> nicht oben, <b>tippe auf die echte 20</b>.`;
     else if (calib.pts.length < 4) h.innerHTML = PROMPTS[calib.pts.length];
     else h.innerHTML = 'Das gelbe Raster muss auf den Drähten liegen. Punkte bei Bedarf ziehen, dann <b>Fertig</b>.';
-    $('#c-done').disabled = calib.pts.length < 4;
+    $('#c-done').disabled = calib.mode === 'search' ? !detector.H : calib.pts.length < 4;
+    $('#c-auto').classList.toggle('hidden', calib.mode === 'search');
   }
-  $('#c-auto').onclick = () => runAutoCalib(0);
-  $('#c-manual').onclick = startManual;
-  $('#c-cancel').onclick = () => { stopCalibration(); setCamStatus('Bereit'); };
-  $('#c-done').onclick = () => {
-    const pts = calib.pts;
-    if (!D.solveH(pts, D.CAL_DST)) return toast('Punkte ungültig – bitte neu setzen');
+  // Kalibrierung übernehmen (automatisch gefunden, gedreht oder von Hand gesetzt)
+  function applyCalib(pts, quiet) {
+    if (!D.solveH(pts, D.CAL_DST)) { if (!quiet) toast('Punkte ungültig – bitte neu setzen'); return false; }
     detector.setCalibration(pts);
     detector.tipBias = 0; detector.biasSamples = []; // neue Kameraposition: neu lernen
     const q = detector.refineCalibration(pts);
     detector.quality = q ? q.quality : null;
+    detector.lost = false; lostSince = 0;
     saveCalib();
-    stopCalibration();
     lastTurnKey = null;
-    if (game) syncDetector(); else if (mode === 'test') detector.startTurn();
-    showQuality(true);
+    if (game || mode === 'learn') syncDetector(); else if (mode === 'test') detector.startTurn();
+    return true;
+  }
+  $('#c-auto').onclick = () => { calib.mode = 'search'; calib.pts = []; calib.since = Date.now(); updateCalibHint(); };
+  $('#c-manual').onclick = startManual;
+  $('#c-cancel').onclick = () => { stopCalibration(); setCamStatus('Bereit'); };
+  $('#c-done').onclick = () => {
+    if (calib.mode === 'manual' && !applyCalib(calib.pts)) return;
+    stopCalibration();
+    if (detector.H) showQuality(true);
   };
+
+  // ---------- Automatische Scheibensuche (ohne Knopf) ----------
+  // Läuft, solange die Kamera an ist und (noch) keine Scheibe bekannt ist, die Scheibe verloren ging
+  // oder im Einrichten-Modus gesucht wird. Gefundene Scheibe wird sofort übernommen.
+  let searchNow = false, searchBusy = false;
+  setInterval(() => {
+    if (!stream || searchBusy || !detector.rgba || gestureView) return;
+    const inSetup = calib && calib.mode === 'search';
+    if (calib && !inSetup) return; // Einrichten: Nutzer prüft gerade bzw. setzt Punkte von Hand
+    const lostLong = detector.H && detector.lost && lostSince && Date.now() - lostSince > 2500;
+    if (!(inSetup || !detector.H || lostLong || searchNow)) return;
+    searchBusy = true;
+    try {
+      const r = detector.autoCalibrate();
+      if (!r) {
+        if (inSetup) updateCalibHint();
+        else if (!detector.H) setCamStatus('Suche die Scheibe … (ganze Scheibe ins Bild, Licht an)');
+        return;
+      }
+      // Ausrichtung der bisherigen Kalibrierung behalten (wo war die 20?)
+      const old = detector.calib;
+      let pts = r.pts;
+      if (old && !inSetup) pts = window.BoardFinder.reorient(pts, old[0]);
+      const hadCalib = !!detector.H;
+      searchNow = false;
+      if (!applyCalib(pts, true)) return;
+      if (inSetup) {
+        calib.pts = detector.calib.slice(); calib.quality = detector.quality || r.quality; calib.mode = 'review';
+        updateCalibHint();
+        toast('Scheibe erkannt ✓ – steht die 20 oben?');
+        setTimeout(() => showQuality(false), 300);
+      } else {
+        toast(hadCalib ? 'Scheibe wiedergefunden ✓' : 'Scheibe erkannt ✓ – los geht’s!');
+        setTimeout(() => showQuality(false), 300);
+      }
+      setCamStatus('Bereit');
+    } finally { searchBusy = false; }
+  }, 600);
 
   // Wie genau kann diese Kameraposition messen? Anzeige + konkreter Tipp
   function showQuality(withToast) {
@@ -1063,6 +1137,7 @@
     e.preventDefault();
     const uv = toUV(e);
     if (!calib || calib.mode === 'search') {
+      if (calib) return; // während der Suche nichts antippen
       pointers.set(e.pointerId, uv);
       canvas.setPointerCapture(e.pointerId);
       gestureStart();
@@ -1081,10 +1156,11 @@
       });
       if (bd <= 40) calib.drag = best;
       else if (calib.mode === 'review') {
-        // auf die echte 20 getippt -> Raster drehen und neu einpassen
+        // auf die echte 20 getippt -> Raster drehen, neu einpassen und gleich übernehmen
         const turned = window.BoardFinder.reorient(calib.pts, uv);
         const ref = detector.refineCalibration(turned);
         calib.pts = ref && ref.quality > 0.1 ? ref.pts : turned;
+        applyCalib(calib.pts, true);
         toast('Ausrichtung geändert – passt die 20 jetzt?');
         return;
       } else return;
@@ -1109,6 +1185,7 @@
       const wasNew = calib.mode === 'manual' && calib.drag === 3 && calib.pts.length === 4 && !calib.snapped;
       calib.drag = -1;
       if (wasNew) { calib.snapped = true; snapManual(); }
+      if (calib.mode === 'review') applyCalib(calib.pts, true);
       updateCalibHint();
     }
   };
@@ -1160,32 +1237,84 @@
   const starSvg = (on) => `<svg viewBox="0 0 24 24" class="star ${on ? 'on' : ''}" aria-hidden="true"><path d="M12 2.8l2.8 5.9 6.4.8-4.7 4.4 1.2 6.4L12 17.2l-5.7 3.1 1.2-6.4-4.7-4.4 6.4-.8z"/></svg>`;
   const stars = (n) => [1, 2, 3].map((i) => starSvg(i <= n)).join('');
 
+  // ---------- Lernpfad als Karte: von Punkt zu Punkt, jede Stufe endet mit einer Prüfung ----------
+  const LOCK_SVG = '<svg viewBox="0 0 24 24" class="lock" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
+  const CROWN_SVG = '<svg viewBox="0 0 24 24" class="crown" aria-hidden="true"><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5z"/></svg>';
+  const TYPE_NAME = { hits: 'Treffer', atc: 'Rund um die Uhr', score: 'Punkte', checkout: 'Checkout', x01: 'Spiel', shanghai: 'Shanghai', bobs27: 'Doppel-Spiel' };
   function renderLearnList() {
     const lvl = Learn.level(lprog), tot = Learn.totalStars(lprog), max = Learn.LESSONS.length * 3;
     const rank = lvl ? Learn.STAGES[lvl - 1].name : 'Neuling';
-    const nextL = Learn.LESSONS.find((l) => !(lprog[l.id] && lprog[l.id].stars > 0));
+    const nextL = Learn.nextOpen(lprog);
     let h = `<div class="lv-card">
       <div class="lv-badge">${lvl || '–'}</div>
-      <div class="lv-info"><small>Dein Level</small><b>${rank}</b><span>${tot} / ${max} Sterne</span></div>
-      ${nextL ? `<button class="btn cta" id="lv-go">Weiter lernen</button>` : '<span class="lv-done">Alles gemeistert 🏆</span>'}
-    </div>
-    <div class="lv-path">${Learn.STAGES.map((S) => `<span class="${S.id <= lvl ? 'on' : ''}">${S.name}</span>`).join('')}</div>`;
+      <div class="lv-info"><small>Dein Level</small><b>${rank}</b><span>${tot} / ${max} Sterne · ${Learn.LESSONS.filter((l) => lprog[l.id] && lprog[l.id].stars).length}/${Learn.LESSONS.length} Übungen</span></div>
+      ${nextL ? `<button class="btn cta" id="lv-go">Weiter</button>` : '<span class="lv-done">Alles gemeistert 🏆</span>'}
+    </div>`;
+    const ROW = 96;
+    let n = 0;
     for (const S of Learn.STAGES) {
       const ls = Learn.LESSONS.filter((l) => l.stage === S.id);
-      h += `<div class="stage"><div class="stage-head"><b>Stufe ${S.id}: ${S.name}</b><small>${S.sub}</small></div>`;
-      for (const L of ls) {
-        const p = lprog[L.id], open = Learn.unlocked(lprog, L.id);
-        h += `<button class="lesson ${open ? '' : 'locked'} ${p && p.stars ? 'done' : ''}" data-l="${L.id}" ${open ? '' : 'disabled'}>
-          <span class="l-main"><b>${esc(L.title)}</b><small>${esc(L.goal)}</small></span>
-          <span class="l-side">${open ? `<span class="stars">${stars(p ? p.stars : 0)}</span>` : '<svg viewBox="0 0 24 24" class="lock" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>'}</span>
-        </button>`;
+      const got = ls.reduce((a, l) => a + ((lprog[l.id] && lprog[l.id].stars) || 0), 0);
+      const pts = ls.map((L, i) => ({ L, x: 50 + 30 * Math.sin((n + i) * 1.05), y: ROW / 2 + i * ROW }));
+      n += ls.length;
+      const height = ls.length * ROW;
+      let path = '', done = '';
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1], b = pts[i], my = (a.y + b.y) / 2;
+        const seg = `M${a.x} ${a.y} C${a.x} ${my} ${b.x} ${my} ${b.x} ${b.y}`;
+        path += seg + ' ';
+        if (lprog[b.L.id] && lprog[b.L.id].stars) done += seg + ' ';
       }
-      h += `</div>`;
+      h += `<section class="map-stage" style="--c:${S.color}">
+        <div class="map-banner"><span class="map-num">${S.id}</span><span class="map-name"><b>${S.name}</b><small>${S.sub}</small></span><span class="map-stars">${starSvg(true)} ${got}/${ls.length * 3}</span></div>
+        <div class="map-track" style="height:${height}px">
+          <svg class="map-path" viewBox="0 0 100 ${height}" preserveAspectRatio="none" aria-hidden="true"><path class="todo" d="${path}"/><path class="done" d="${done}"/></svg>
+          ${pts.map(({ L, x, y }, i) => {
+            const p = lprog[L.id], open = Learn.unlocked(lprog, L.id), cur = nextL && nextL.id === L.id;
+            const cls = ['map-node', L.boss ? 'boss' : '', p && p.stars ? 'done' : '', open ? '' : 'locked', cur ? 'cur' : ''].join(' ');
+            const inner = !open ? LOCK_SVG : L.boss ? CROWN_SVG : `<b>${i + 1}</b>`;
+            return `<button class="${cls}" data-l="${L.id}" style="left:${x}%;top:${y}px" aria-label="${esc(L.title)}">
+              <span class="mn-dot">${inner}</span>
+              <span class="mn-label">${cur ? '<em>Start</em>' : ''}${esc(L.title)}</span>
+              ${p && p.stars ? `<span class="mn-stars">${stars(p.stars)}</span>` : ''}
+            </button>`;
+          }).join('')}
+        </div>
+      </section>`;
     }
     $('#learn-body').innerHTML = h;
-    const go = $('#lv-go'); if (go) go.onclick = () => startLesson(nextL.id);
+    const go = $('#lv-go');
+    if (go) go.onclick = () => openLessonInfo(nextL.id);
   }
-  $('#learn-body').addEventListener('click', (e) => { const b = e.target.closest('.lesson[data-l]'); if (b && !b.disabled) startLesson(b.dataset.l); });
+  function scrollToCurrent() {
+    const c = $('#learn-body .map-node.cur');
+    if (c) c.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+  function bestText(L, p) {
+    if (!p || p.best == null) return '';
+    const v = String(p.best).replace('.', ',');
+    if (L.type === 'atc' || L.type === 'x01') return `Bestes Ergebnis: ${v} Pfeile`;
+    if (L.type === 'score') return `Bester Schnitt: Ø ${v}`;
+    if (L.type === 'checkout') return `Bestes Ergebnis: ${v} Checkouts`;
+    if (L.type === 'hits') return `Bestes Ergebnis: ${v} Treffer`;
+    return `Bestes Ergebnis: ${v} Punkte`;
+  }
+  function openLessonInfo(id) {
+    const L = Learn.byId[id], S = Learn.STAGES[L.stage - 1], p = lprog[id], open = Learn.unlocked(lprog, id);
+    $('#li-stage').textContent = `Stufe ${S.id} · ${S.name}${L.boss ? ' · Prüfung' : ''} · ${TYPE_NAME[L.type] || ''}`;
+    $('#li-stage').style.color = S.color;
+    $('#li-title').textContent = L.title;
+    $('#li-goal').textContent = L.goal;
+    $('#li-stars').innerHTML = stars(p ? p.stars : 0);
+    $('#li-best').textContent = bestText(L, p) + (p && p.tries ? ` · ${p.tries}× gespielt` : '');
+    $('#li-tip').textContent = L.coach[0] || '';
+    $('#li-start').classList.toggle('hidden', !open);
+    $('#li-start').textContent = p && p.stars ? 'Nochmal spielen' : 'Starten';
+    $('#li-locked').classList.toggle('hidden', open);
+    $('#li-start').onclick = () => { $('#dlg-lesson').close(); startLesson(id); };
+    $('#dlg-lesson').showModal();
+  }
+  $('#learn-body').addEventListener('click', (e) => { const b = e.target.closest('.map-node[data-l]'); if (b) openLessonInfo(b.dataset.l); });
 
   function startLesson(id) {
     if (!payRound('training')) return;
@@ -1206,11 +1335,13 @@
     if (!lsess) return;
     const L = Learn.byId[lsess.id], st = lsess.st;
     let label = 'Ziel', val = st.target, sub = '';
-    if (L.type === 'atc') { label = 'Triff die'; sub = 'Single, Doppel oder Triple'; }
-    if (L.type === 'score') { label = 'Ziel'; val = 'T20'; sub = 'Möglichst viele Punkte auf die 20'; }
+    if (L.type === 'atc') { label = 'Triff'; sub = L.mult === 2 ? 'Nur Doppel zählen' : L.mult === 3 ? 'Nur Triple zählen' : 'Single, Doppel oder Triple'; }
+    if (L.type === 'score') { label = 'Ziel'; val = 'T' + (L.seg || 20); sub = `Möglichst viele Punkte auf die ${L.seg || 20}`; }
+    if (L.type === 'shanghai') { label = 'Runde ' + Math.min(L.seq.length, lsess.rounds.length + 1); sub = 'Single 1×, Doppel 2×, Triple 3× · S+D+T = Shanghai!'; }
+    if (L.type === 'bobs27') { const n = L.seq[Math.min(L.seq.length - 1, lsess.rounds.length)]; label = 'Triff'; sub = st.dead ? 'Unter 0 – vorbei' : `${st.info.score} Punkte · Treffer +${2 * n}, keiner −${2 * n}`; }
     if (L.type === 'checkout' || L.type === 'x01') {
-      label = L.type === 'x01' ? '501 – Rest' : 'Checkout';
-      const co = st.rest > 0 && !st.curDone ? Game.checkout(st.rest, st.info.dartsLeft, true) : null;
+      label = L.type === 'x01' ? L.start + ' – Rest' : 'Checkout';
+      const co = st.rest > 0 && !st.curDone ? Game.checkout(st.rest, st.info.dartsLeft, L.doubleOut !== false) : null;
       sub = st.curDone && L.type === 'checkout' ? (st.results[lsess.rounds.length].out === 'ok' ? 'Checkout! ✓ Pfeile ziehen' : 'Nicht geschafft – Pfeile ziehen') : co ? 'Weg: ' + co.join(' · ') : st.rest > 0 ? 'Kein Finish möglich – stell dir ein Doppel' : '';
     }
     if (L.type === 'hits') sub = L.target.any ? 'Hauptsache auf der Scheibe' : 'Jeder Treffer zählt';
@@ -1226,6 +1357,7 @@
     $('#lp-miss').disabled = st.curDone || st.finished;
     $('#lp-manual').disabled = st.curDone || st.finished;
     syncDetector();
+    hooks.learn.forEach((fn) => { try { fn(lsess); } catch (e) { console.error(e); } });
     if (st.finished) setTimeout(learnFinished, 700);
   }
 
@@ -1235,11 +1367,21 @@
     const before = lsess.st;
     if (!Learn.addDart(lsess, d)) return;
     const st = lsess.st, parts = [say(d)];
-    if (L.type === 'atc' && st.info.pos > before.info.pos) { parts.length = 0; parts.push(st.info.pos >= L.seq.length ? 'Geschafft!' : String(st.target)); }
+    if (L.type === 'atc' && st.info.pos > before.info.pos) {
+      const nx = L.seq[st.info.pos];
+      parts.length = 0;
+      parts.push(st.info.pos >= L.seq.length ? 'Geschafft!' : nx === 25 ? 'Bull' : (L.mult === 2 ? 'Doppel ' : L.mult === 3 ? 'Triple ' : '') + nx);
+    }
+    if (L.type === 'shanghai' && st.shanghai) parts.push('Shanghai!');
+    if ((L.type === 'shanghai' || L.type === 'bobs27') && lsess.cur.length === 3 && !st.finished) parts.push(L.type === 'bobs27' ? 'Doppel ' + L.seq[lsess.rounds.length + 1] : String(L.seq[lsess.rounds.length + 1]));
     if (L.type === 'checkout' && st.curDone) { const r = st.results[lsess.rounds.length]; parts.push(r.out === 'ok' ? 'Checkout!' : r.out === 'bust' ? 'Überworfen' : ''); }
     if (L.type === 'x01' && st.curBust) parts.push('Überworfen');
     if (L.type === 'x01' && st.rest === 0) parts.push('Game shot!');
-    if (L.type === 'score' && lsess.cur.length === 3) { const t = lsess.cur.reduce((a, x) => a + x.value, 0); parts.push(t === 180 ? 'Hundertachtzig!' : String(t)); }
+    if ((L.type === 'score' || L.type === 'shanghai') && lsess.cur.length === 3) {
+      const tg = L.type === 'shanghai' ? L.seq[lsess.rounds.length] : null;
+      const t = lsess.cur.filter((x) => tg == null || x.seg === tg).reduce((a, x) => a + x.value, 0);
+      parts.splice(1, 0, t === 180 ? 'Hundertachtzig!' : String(t));
+    }
     speak(parts.filter(Boolean));
     renderLearnPlay();
     const chip = $(`#lp-darts .chip[data-i="${lsess.cur.length - 1}"]`); if (chip) chip.classList.add('flash');
@@ -1253,7 +1395,7 @@
     const L = Learn.byId[lsess.id], st = lsess.st;
     const wasOpen = Learn.LESSONS.map((l) => Learn.unlocked(lprog, l.id));
     Learn.record(lprog, lsess.id, st);
-    LS.set('ds.learn', lprog);
+    saveLearnLocal();
     window.Account && window.Account.saveLearn && window.Account.saveLearn(lprog);
     const idx = Learn.LESSONS.findIndex((l) => l.id === lsess.id);
     const nextL = Learn.LESSONS[idx + 1];
@@ -1268,12 +1410,13 @@
     $('#lr-next').onclick = () => { $('#dlg-learn').close(); startLesson(nextL.id); };
     $('#lr-again').onclick = () => { $('#dlg-learn').close(); startLesson(lsess.id); };
     $('#lr-list').onclick = () => { $('#dlg-learn').close(); openLearn(); };
+    syncLearn();
     speak(st.passed ? (lvlUp ? ['Bestanden!', 'Neue Stufe erreicht'] : 'Bestanden!') : 'Noch nicht geschafft', { force: false });
     $('#dlg-learn').showModal();
   }
 
-  function openLearn() { mode = null; lsess = null; detector.phase = 'idle'; renderLearnList(); show('learn'); }
-  $('#go-learn').onclick = openLearn;
+  function openLearn() { mode = null; lsess = null; detector.phase = 'idle'; renderLearnList(); show('learn'); setTimeout(scrollToCurrent, 120); }
+  $('#go-learn').onclick = () => { if (requireAccount('den Lernpfad', openLearn)) openLearn(); };
   $('#lp-back').onclick = openLearn;
   $('#lp-manual').onclick = () => openInput(null);
   $('#lp-miss').onclick = () => { learnDart({ seg: 0, mult: 0 }); detector.rebaseline(); };
@@ -1286,62 +1429,174 @@
   }
   hooks.home.push(learnTile);
 
-  // ---------- Online ----------
-  function send(m) {
-    if (ws && ws.readyState === 1) ws.send(JSON.stringify(m));
-    else toast('Keine Verbindung zum Server …');
+  // ---------- Konto nötig (Online, Turniere, Lernpfad) ----------
+  let afterLogin = null;
+  function requireAccount(what, fn) {
+    const A = window.Account;
+    if (A && A.user) return true;
+    if (A && !A.ready) { toast('Anmeldung wird geladen …'); afterLogin = fn || null; return false; }
+    afterLogin = fn || null;
+    toast(A && A.error ? A.error : `Für ${what} brauchst du ein kostenloses Konto – kurz anmelden, dann geht’s los.`, 4500);
+    $('#acct-chip').click();
+    return false;
+  }
+  window.DS.requireAccount = requireAccount;
+  window.addEventListener('account', (e) => {
+    const u = e.detail;
+    if (u) {
+      syncLearn();
+      if (!settings.name) { settings.name = u.name.split(' ')[0].slice(0, 16); saveSettings(); }
+      if (afterLogin) { const f = afterLogin; afterLogin = null; setTimeout(f, 60); }
+      if (net.open && !net.authed) ensureAuth();
+    } else afterLogin = null;
+  });
+
+  // Lernpfad mit dem Konto abgleichen (Fortschritt auf allen Geräten)
+  async function syncLearn() {
+    const A = window.Account;
+    if (!A || !A.user || !A.loadUser) return;
+    const key = 'ds.learn.' + A.user.uid;
+    let local = Learn.mergeProgress(LS.get(key, {}), lprog);
+    const legacy = LS.get('ds.learn', null); // Fortschritt aus der Zeit vor dem Konto
+    if (legacy) { local = Learn.mergeProgress(local, legacy); LS.del('ds.learn'); }
+    try {
+      const doc = await A.loadUser();
+      const merged = Learn.mergeProgress(local, (doc && doc.learn) || {});
+      lprog = merged;
+      LS.set(key, merged);
+      if (JSON.stringify(merged) !== JSON.stringify((doc && doc.learn) || {})) await A.saveLearn(merged);
+    } catch (_) { lprog = local; LS.set(key, local); }
+    if (screen === 'learn') renderLearnList();
+    learnTile();
+  }
+  function saveLearnLocal() {
+    const A = window.Account;
+    LS.set(A && A.user ? 'ds.learn.' + A.user.uid : 'ds.learn', lprog);
   }
 
+  // ---------- Verbindung zum Server (Online, Turniere, gekoppelte Geräte) ----------
+  const netListeners = {};
+  const emitNet = (t, m) => (netListeners[t] || []).forEach((fn) => { try { fn(m); } catch (e) { console.error(e); } });
+  const net = {
+    on(t, fn) { (netListeners[t] || (netListeners[t] = [])).push(fn); },
+    send: (m) => send(m, true),
+    connect: () => connect(),
+    get open() { return !!(ws && ws.readyState === 1); },
+    authed: false,
+    keep: new Set(), // weitere Gründe, die Verbindung zu halten (gekoppelte Geräte)
+  };
+  window.DS.net = net;
+  let queueing = null; // Zufallsgegner: { startScore }
+
+  function send(m, quiet) {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify(m));
+    else if (!quiet) toast('Keine Verbindung zum Server …');
+  }
+  const needsConnection = () => !!((mode === 'online' && room) || tourn || queueing || net.keep.size || sessionStorage.getItem('ds.tourn') || sessionStorage.getItem('ds.online'));
+
+  let connecting = null, authWaiter = null;
   function connect() {
-    return new Promise((resolve, reject) => {
-      if (ws && ws.readyState === 1) return resolve();
+    if (ws && ws.readyState === 1) return ensureAuth();
+    if (connecting) return connecting;
+    connecting = new Promise((resolve, reject) => {
       const sock = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
       ws = sock;
-      sock.onopen = () => {
+      net.authed = false;
+      sock.onopen = async () => {
         clearInterval(pingTimer);
-        pingTimer = setInterval(() => send({ t: 'ping' }), 25000);
-        resolve();
+        pingTimer = setInterval(() => send({ t: 'ping' }, true), 25000);
+        try { await ensureAuth(); } catch (_) {}
+        connecting = null;
+        resolve(net.authed);
+        emitNet('open');
       };
-      sock.onerror = () => reject(new Error('Verbindung fehlgeschlagen'));
+      sock.onerror = () => { if (connecting) { connecting = null; reject(new Error('Keine Verbindung zum Server')); } };
       sock.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch (_) { return; } onServer(m); };
       sock.onclose = () => {
         if (ws !== sock) return;
-        ws = null;
+        ws = null; net.authed = false; connecting = null;
         clearInterval(pingTimer);
-        if ((mode === 'online' && room) || tourn) { toast('Verbindung weg – verbinde neu …'); setTimeout(reconnect, 1500); }
+        emitNet('close');
+        if (needsConnection()) { toast('Verbindung weg – verbinde neu …'); setTimeout(reconnect, 1500); }
       };
     });
+    return connecting;
+  }
+  // Anmeldung beim Server (er prüft das Konto selbst)
+  async function ensureAuth() {
+    const A = window.Account;
+    if (net.authed) return true;
+    if (!A || !A.user || !A.getToken) return false;
+    let token = null;
+    try { token = await A.getToken(); } catch (_) {}
+    if (!token || !(ws && ws.readyState === 1)) return false;
+    return new Promise((resolve) => {
+      const done = (v) => { if (authWaiter === done) authWaiter = null; resolve(v); };
+      authWaiter = done;
+      send({ t: 'auth', token, name: settings.name || A.user.name }, true);
+      setTimeout(() => done(net.authed), 8000);
+    });
+  }
+  // online-fähig? (verbunden + angemeldet)
+  async function goOnline() {
+    try { await connect(); } catch (e) { toast(e.message); return false; }
+    if (!(await ensureAuth())) { toast('Anmeldung beim Server fehlgeschlagen – bitte neu anmelden.', 4500); return false; }
+    return true;
   }
 
   async function reconnect() {
+    if (!needsConnection()) return;
+    try { await connect(); } catch (_) { setTimeout(reconnect, 3000); return; }
     const tsaved = JSON.parse(sessionStorage.getItem('ds.tourn') || 'null');
-    if (tsaved) {
-      try { await connect(); send({ t: 'trejoin', code: tsaved.code, id: tsaved.id }); }
-      catch (_) { setTimeout(reconnect, 3000); }
-      return;
-    }
+    if (tsaved) send({ t: 'trejoin', code: tsaved.code, id: tsaved.id }, true);
     const saved = JSON.parse(sessionStorage.getItem('ds.online') || 'null');
-    if (!saved || mode !== 'online') return;
-    try { await connect(); send({ t: 'rejoin', code: saved.code, id: saved.id }); }
-    catch (_) { setTimeout(reconnect, 3000); }
+    if (saved && (mode === 'online' || tsaved)) send({ t: 'rejoin', code: saved.code, id: saved.id }, true);
+    if (queueing) send({ t: 'quick', startScore: queueing.startScore, name: settings.name }, true);
+    emitNet('reconnected');
   }
+
+  // Kamerabild der Gegner (Fair Play)
+  const oppFrames = new Map(); // Spieler-ID -> { img, dart, ts }
+  let oppShown = null;
 
   function onServer(m) {
     switch (m.t) {
+      case 'authok':
+        net.authed = true;
+        if (authWaiter) authWaiter(true);
+        break;
+      case 'autherr':
+        net.authed = false;
+        if (authWaiter) authWaiter(false);
+        toast(m.msg, 5000);
+        break;
+      case 'needauth':
+        requireAccount('Online-Spiele');
+        break;
       case 'joined':
         myId = m.id;
         sessionStorage.setItem('ds.online', JSON.stringify({ code: m.code, id: m.id }));
         break;
+      case 'queued':
+        $('#queue-info').textContent = `${m.startScore} · Double-Out${m.waiting > 1 ? ' · ' + m.waiting + ' warten' : ''}`;
+        if (screen !== 'queue') show('queue');
+        break;
+      case 'unqueued':
+        queueing = null;
+        break;
       case 'room': {
         const wasGame = !!game && mode === 'online';
+        const prevCode = room && room.code;
         mode = 'online';
         room = m.room;
+        if (room.code !== prevCode) { oppFrames.clear(); oppShown = null; }
+        if (queueing && room.kind === 'quick') { queueing = null; window.Sound && window.Sound.ok(); speak('Gegner gefunden'); }
         const prevTurn = game && game.turnId;
         game = room.game;
         // jedes neue Online-Spiel (auch Revanche / Turnier-Match) kostet einen Coin
         if (game && game.id !== paidGameId && game.players.some((p) => p.id === myId)) { paidGameId = game.id; Coins.spend(1, room.tourn ? 'turnier' : 'online'); }
         if (game) {
-          if (!wasGame || screen !== 'game') { lastTurnKey = null; winShownFor = null; resetAnnounce(); show('game'); }
+          if (!wasGame || screen !== 'game') { lastTurnKey = null; winShownFor = null; resetAnnounce(); show('game'); if (!stream) setTimeout(() => toast('Kamera starten – dein Gegner sieht dann deine Scheibe.', 4000), 600); }
           if (prevTurn && game.turnId < prevTurn) winShownFor = null; // Revanche
           update();
         } else {
@@ -1351,8 +1606,27 @@
         }
         break;
       }
+      case 'frame':
+        if (m.from === 'me') { emitNet('frame', m); break; } // eigenes Bild (am gekoppelten Bildschirm)
+        oppFrames.set(m.from, { img: m.img, dart: m.dart, ts: Date.now() });
+        renderOpp();
+        break;
+      case 'forfeit':
+        toast(m.loser === myId ? 'Du hast das Match verloren (' + m.why + ').' : 'Dein Gegner ist raus (' + m.why + ') – du gewinnst!', 5000);
+        break;
+      case 'rematchvote':
+        if (!m.mine) toast('Dein Gegner möchte eine Revanche – tippe auf „Revanche“.', 5000);
+        else toast('Revanche angeboten – warte auf den Gegner …');
+        break;
+      case 'reported':
+        toast(m.again ? 'Du hast diesen Spieler schon gemeldet.' : 'Danke! Die Meldung ist eingegangen – wir schauen sie uns an.', 4500);
+        break;
       case 'error':
         toast(m.msg);
+        break;
+      case 'tlist':
+        tlistCache = m.list;
+        renderTList();
         break;
       case 'tjoined':
         tId = m.id;
@@ -1361,10 +1635,12 @@
         break;
       case 'tourn': {
         const first = !tourn;
+        const wasDone = tourn && tourn.status === 'done';
         tourn = m.tourn;
-        if (first || (mode !== 'online' && screen !== 'game')) { if (mode !== 'online') mode = 'tourn'; }
+        if (first && mode !== 'online') mode = 'tourn';
         if (screen === 'tlobby' || screen === 'tourn' || (first && screen !== 'game')) { renderTLobby(); if (screen !== 'tlobby') show('tlobby'); }
-        else if (screen === 'tlobby') renderTLobby();
+        if (!wasDone && tourn.status === 'done' && tourn.champion === tId) { speak('Turniersieg!'); toast('🏆 Du hast das Turnier gewonnen!', 6000); }
+        tournTile();
         break;
       }
       case 'tmatchdone':
@@ -1372,7 +1648,7 @@
         sessionStorage.removeItem('ds.online');
         if ($('#dlg-win').open) $('#dlg-win').close();
         detector.phase = 'idle';
-        speak(m.won ? 'Match gewonnen!' : 'Match verloren', { force: false });
+        speak(m.won ? 'Match gewonnen!' : 'Match verloren');
         toast(m.won ? 'Match gewonnen! 🎯 Du bist weiter.' : `${m.winnerName} gewinnt das Match.`, 4500);
         renderTLobby(); show('tlobby');
         break;
@@ -1385,6 +1661,8 @@
         leaveOnline();
         goHome(true);
         break;
+      default:
+        emitNet(m.t, m);
     }
   }
 
@@ -1400,30 +1678,45 @@
   }
 
   function leaveOnline() {
-    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'leave' }));
-    const s = ws; ws = null;
-    if (s) try { s.close(); } catch (_) {}
-    clearInterval(pingTimer);
+    send({ t: 'leave' }, true);
     sessionStorage.removeItem('ds.online');
-    room = null; myId = null;
+    room = null; myId = null; queueing = null;
+    oppFrames.clear(); renderOpp();
     if (mode === 'online') { mode = null; game = null; }
   }
 
   function getName() {
     const n = $('#on-name').value.trim();
-    if (!n) { toast('Bitte zuerst deinen Namen eingeben'); $('#on-name').focus(); return null; }
+    if (!n) { toast('Bitte zuerst deinen Spielernamen eingeben'); $('#on-name').focus(); return null; }
     settings.name = n; saveSettings();
     return n;
   }
+  let qScore = 501;
+  $('#q-score').onclick = (e) => { const b = e.target.closest('button[data-v]'); if (!b) return; qScore = Number(b.dataset.v); $$('#q-score button').forEach((x) => x.classList.toggle('on', x === b)); };
+  $('#on-quick').onclick = async () => {
+    const name = getName(); if (!name) return;
+    if (!requireAccount('Online-Spiele', () => $('#go-online').click())) return;
+    if (!(await goOnline())) return;
+    queueing = { startScore: qScore };
+    $('#queue-info').textContent = `${qScore} · Double-Out`;
+    show('queue');
+    send({ t: 'quick', startScore: qScore, name });
+  };
+  $('#queue-cancel').onclick = () => { send({ t: 'quickcancel' }, true); queueing = null; show('online'); };
+  $('#on-tourns').onclick = () => $('#go-tourn').click();
   $('#on-create').onclick = async () => {
     const name = getName(); if (!name) return;
-    try { await connect(); mode = 'online'; send({ t: 'create', name }); } catch (e) { toast(e.message); }
+    if (!requireAccount('Online-Spiele', () => $('#go-online').click())) return;
+    if (!(await goOnline())) return;
+    mode = 'online'; send({ t: 'create', name });
   };
   $('#on-join').onclick = async () => {
     const name = getName(); if (!name) return;
     const code = $('#on-code').value.trim().toUpperCase();
     if (code.length !== 4) return toast('Der Code hat 4 Zeichen');
-    try { await connect(); mode = 'online'; send({ t: 'join', code, name }); } catch (e) { toast(e.message); }
+    if (!requireAccount('Online-Spiele', () => { $('#go-online').click(); $('#on-code').value = code; })) return;
+    if (!(await goOnline())) return;
+    mode = 'online'; send({ t: 'join', code, name });
   };
   $('#on-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#on-join').click(); });
   $('#lobby-start').onclick = () => send({ t: 'start', startScore: settings.startScore, doubleOut: settings.doubleOut });
@@ -1436,80 +1729,159 @@
     } catch (_) {}
   };
 
+  // ---------- Live-Bild des Gegners + Melden ----------
+  function oppTarget() {
+    if (mode !== 'online' || !room || !game) return null;
+    const others = game.players.filter((p) => p.id !== myId);
+    if (!others.length) return null;
+    const cur = game.players[game.current];
+    if (cur && cur.id !== myId) return cur;
+    // ich bin dran: wer zuletzt geworfen hat (bzw. der einzige Gegner)
+    let best = others[0], bt = -1;
+    for (const p of others) { const f = oppFrames.get(p.id); if (f && f.ts > bt) { bt = f.ts; best = p; } }
+    return best;
+  }
+  function renderOpp() {
+    const box = $('#opp-cam');
+    const p = oppTarget();
+    if (!p) { box.classList.add('hidden'); oppShown = null; return; }
+    box.classList.remove('hidden');
+    oppShown = p.id;
+    const f = oppFrames.get(p.id);
+    const rp = room.players.find((x) => x.id === p.id);
+    const fresh = f && Date.now() - f.ts < 8000;
+    $('#opp-title').textContent = `Live-Bild: ${p.name}` + (fresh ? '' : rp && rp.online === false ? ' (offline)' : '');
+    if (f) $('#opp-img').src = f.img;
+    $('#opp-img').classList.toggle('stale', !fresh);
+    $('#opp-none').classList.toggle('hidden', !!f);
+    $('#opp-none').textContent = rp && rp.cam ? 'Bild kommt gleich …' : `${p.name} hat die Kamera nicht an`;
+    $('#opp-dart').textContent = f && f.dart && fresh ? f.dart : '';
+    box.classList.toggle('nocam', !(rp && rp.cam));
+  }
+  setInterval(() => { if (screen === 'game' && mode === 'online') renderOpp(); }, 2000);
+  $('#b-report').onclick = () => {
+    const p = oppShown && game && game.players.find((x) => x.id === oppShown);
+    if (!p) return;
+    $('#rp-who').textContent = `Du meldest ${p.name}. Die letzten Kamerabilder und der Spielverlauf werden mitgeschickt.`;
+    $('#rp-text').value = '';
+    $('#rp-send').onclick = () => {
+      const reason = (document.querySelector('#rp-reasons input:checked') || {}).value || 'Sonstiges';
+      send({ t: 'report', target: p.id, reason, text: $('#rp-text').value.trim() });
+      $('#dlg-report').close();
+    };
+    $('#dlg-report').showModal();
+  };
 
-  // ---------- Turnier ----------
-  const tOpts = Object.assign({ startScore: 501, legs: 1, doubleOut: true }, LS.get('ds.topts', {}));
-  function renderTOpts() {
-    $$('#t-score button').forEach((b) => b.classList.toggle('on', Number(b.dataset.v) === tOpts.startScore));
-    $$('#t-legs button').forEach((b) => b.classList.toggle('on', Number(b.dataset.v) === tOpts.legs));
-    $$('#t-out button').forEach((b) => b.classList.toggle('on', String(tOpts.doubleOut) === b.dataset.v));
+  // Eigenes Kamerabild senden: an Gegner (online, eigener Zug) und an gekoppelte Bildschirme
+  const shot = document.createElement('canvas');
+  let myTurnEnd = 0, pendingDart = null, lastShot = 0;
+  function wantFrames() {
+    if (!stream || !canvas.width) return false;
+    if ((window.DS.linkCount || 0) > 0) return true;
+    if (mode !== 'online' || !room || !game) return false;
+    if (myTurn() && !game.finished) { myTurnEnd = Date.now(); return true; }
+    return Date.now() - myTurnEnd < 4000; // kurz nach der Aufnahme: Pfeile stecken noch, Gegner kann prüfen
   }
-  const segPick = (sel, key, conv) => { $(sel).onclick = (e) => { const b = e.target.closest('button[data-v]'); if (!b) return; tOpts[key] = conv(b.dataset.v); LS.set('ds.topts', tOpts); renderTOpts(); }; };
-  segPick('#t-score', 'startScore', Number); segPick('#t-legs', 'legs', Number); segPick('#t-out', 'doubleOut', (v) => v === 'true');
-  function tGetName() {
-    const n = $('#t-name').value.trim();
-    if (!n) { toast('Bitte zuerst deinen Namen eingeben'); $('#t-name').focus(); return null; }
-    settings.name = n; saveSettings();
-    return n;
+  function sendFrame() {
+    if (!wantFrames()) return;
+    const w = 400, h = Math.round((w * canvas.height) / canvas.width);
+    if (shot.width !== w || shot.height !== h) { shot.width = w; shot.height = h; }
+    shot.getContext('2d').drawImage(canvas, 0, 0, w, h);
+    let img;
+    try { img = shot.toDataURL('image/jpeg', 0.6); } catch (_) { return; }
+    send({ t: 'frame', img, dart: pendingDart }, true);
+    pendingDart = null;
+    lastShot = Date.now();
   }
-  $('#go-tourn').onclick = () => { $('#t-name').value = settings.name || (window.Account && window.Account.user ? window.Account.user.name.split(' ')[0] : ''); renderTOpts(); if (tourn) { renderTLobby(); show('tlobby'); } else show('tourn'); };
-  $('#t-create').onclick = async () => {
-    const name = tGetName(); if (!name) return;
-    try { await connect(); send({ t: 'tcreate', name, ...tOpts }); show('tlobby'); } catch (e) { toast(e.message); }
+  setInterval(() => { if (ws && ws.readyState === 1 && Date.now() - lastShot > 480) sendFrame(); }, 250);
+  window.DS.frameDart = (label) => { pendingDart = label; setTimeout(sendFrame, 300); };
+
+  // ---------- Turniere gegen Fremde ----------
+  let tlistCache = null, tlistTimer = null;
+  const fmtText = (f) => `${f.startScore} · ${f.doubleOut ? 'Double-Out' : 'Single-Out'} · ${f.legs === 1 ? '1 Leg' : 'Best of ' + (f.legs * 2 - 1)}`;
+  const mmss = (ms) => { const t = Math.max(0, Math.round(ms / 1000)); return Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0'); };
+  function renderTList() {
+    const el = $('#t-list');
+    if (!tlistCache) { el.innerHTML = '<p class="muted">Lade Turniere …</p>'; return; }
+    el.innerHTML = tlistCache.map((f) => {
+      const mine = tourn && tourn.fmt === f.fmt && tourn.status !== 'done';
+      const st = f.startsAt ? `Start in ${mmss(f.startsAt - Date.now())}` : f.waiting ? `${f.waiting}/${f.size} warten` : 'Sei der Erste!';
+      return `<div class="t-card">
+        <div class="t-card-head"><b>${esc(f.title)}</b><span class="t-size">${f.size} Spieler</span></div>
+        <div class="t-fmt">${fmtText(f)}</div>
+        <div class="t-meter"><i style="width:${Math.round((f.waiting / f.size) * 100)}%"></i></div>
+        <div class="t-foot"><span>${st}${f.running ? ` · ${f.running} läuft gerade` : ''}</span>
+          <button class="btn ${mine ? '' : 'cta'}" data-fmt="${f.fmt}">${mine ? 'Zum Turnier' : 'Mitmachen'}</button></div>
+      </div>`;
+    }).join('');
+  }
+  $('#t-list').addEventListener('click', async (e) => {
+    const b = e.target.closest('button[data-fmt]');
+    if (!b) return;
+    if (tourn && tourn.fmt === b.dataset.fmt && tourn.status !== 'done') { renderTLobby(); show('tlobby'); return; }
+    if (tourn && tourn.status !== 'done') return toast('Du bist schon in einem Turnier.');
+    if (!requireAccount('Turniere', () => $('#go-tourn').click())) return;
+    if (!(await goOnline())) return;
+    if (tourn && tourn.status === 'done') leaveTourn(false);
+    send({ t: 'tjoin', fmt: b.dataset.fmt, name: settings.name || (window.Account.user && window.Account.user.name) });
+  });
+  $('#go-tourn').onclick = async () => {
+    if (!requireAccount('Turniere', () => $('#go-tourn').click())) return;
+    if (tourn && tourn.status !== 'done') { renderTLobby(); show('tlobby'); return; }
+    renderTList(); show('tourn');
+    if (!(await goOnline())) return;
+    send({ t: 'tlist' });
   };
-  $('#t-join').onclick = async () => {
-    const name = tGetName(); if (!name) return;
-    const code = $('#t-code').value.trim().toUpperCase();
-    if (code.length !== 4) return toast('Der Code hat 4 Zeichen');
-    try { await connect(); send({ t: 'tjoin', code, name }); } catch (e) { toast(e.message); }
+  setInterval(() => {
+    if (screen === 'tourn' && ws && ws.readyState === 1) send({ t: 'tlist' }, true);
+    if (screen === 'tlobby' && tourn && (tourn.status === 'starting' || tourn.status === 'lobby')) renderTLobby();
+  }, 3000);
+  setInterval(() => { if (screen === 'tlobby' && tourn && tourn.status === 'starting') renderTLobby(); if (screen === 'tourn' && tlistCache && tlistCache.some((f) => f.startsAt)) renderTList(); }, 1000);
+  function tournTile() {
+    $('#tourn-tile-status').textContent = tourn && tourn.status !== 'done' ? `Du bist dabei: ${tourn.title}` : 'Gegen Spieler aus aller Welt';
+  }
+  hooks.home.push(tournTile);
+  $('#tl-leave').onclick = () => {
+    if (tourn && tourn.status === 'running' && !tourn.players.find((p) => p.id === tId).out && !confirm('Turnier wirklich verlassen? Dein laufendes oder nächstes Match zählt dann als verloren.')) return;
+    leaveTourn(false); goHome(true);
   };
-  $('#t-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#t-join').click(); });
-  $('#tl-start').onclick = () => send({ t: 'tstart' });
-  $('#tl-leave').onclick = () => goHome(false);
   $('#tl-play').onclick = () => { if (room && game) show('game'); };
   $('#b-tree').onclick = () => { renderTLobby(); show('tlobby'); };
-  $('#tl-share').onclick = async () => {
-    const url = location.origin + location.pathname + '?turnier=' + tourn.code;
-    try {
-      if (navigator.share) await navigator.share({ title: 'DartScan Turnier', text: 'Mach mit beim Dart-Turnier! Code ' + tourn.code, url });
-      else { await navigator.clipboard.writeText(url); toast('Link kopiert'); }
-    } catch (_) {}
-  };
 
   function leaveTourn(silent) {
-    if (!silent && ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'tleave' }));
+    if (!silent) send({ t: 'tleave' }, true);
     sessionStorage.removeItem('ds.tourn');
     tourn = null; tId = null;
     if (mode === 'tourn') mode = null;
+    tournTile();
   }
 
   const roundName = (r, n) => (r === n - 1 ? 'Finale' : r === n - 2 ? 'Halbfinale' : r === n - 3 ? 'Viertelfinale' : 'Runde ' + (r + 1));
   function renderTLobby() {
     if (!tourn) return;
-    const T = tourn, host = T.hostId === tId;
+    const T = tourn;
     const nm = (id) => { const p = T.players.find((x) => x.id === id); return p ? p.name : ''; };
-    $('#tl-title').textContent = T.status === 'done' ? 'Turnier beendet' : 'Turnier';
-    $('#tl-mode').textContent = `${T.opts.startScore} · ${T.opts.doubleOut ? 'Double-Out' : 'Single-Out'} · ${T.opts.legs === 1 ? '1 Leg' : 'Best of ' + (T.opts.legs * 2 - 1)}`;
-    $('#tl-code').textContent = T.code;
-    $('#tl-codebox').classList.toggle('hidden', T.status !== 'lobby');
-    // Status
+    $('#tl-title').textContent = T.status === 'done' ? 'Turnier beendet' : T.title;
+    $('#tl-mode').textContent = fmtText({ ...T.opts, legs: T.opts.legs });
     let st = '';
-    if (T.status === 'lobby') st = `<div class="tl-info">Teile den Code – ${T.players.length} von max. 16 Spielern dabei.</div>`;
-    else if (T.status === 'running') {
+    if (T.status === 'lobby') {
+      const minP = { 4: 3, 8: 4, 16: 6 }[T.size] || 2;
+      st = `<div class="tl-info"><b>${T.players.length}/${T.size}</b> Spieler da. Start, sobald das Feld voll ist${T.waitUntil ? ` – spätestens in ${mmss(T.waitUntil - Date.now())}, wenn mindestens ${minP} dabei sind` : ''}.</div>`;
+    } else if (T.status === 'starting') {
+      st = `<div class="tl-info live">Turnier startet in <b>${mmss((T.startsAt || Date.now()) - Date.now())}</b> – Kamera bereit?</div>`;
+    } else if (T.status === 'running') {
+      const me = T.players.find((p) => p.id === tId);
       const mine = T.rounds.flat().find((m) => (m.a === tId || m.b === tId) && m.status !== 'bye' && m.status !== 'done');
-      const out = T.rounds.flat().some((m) => m.status === 'done' && (m.a === tId || m.b === tId) && m.winner !== tId);
-      st = out ? `<div class="tl-info">Du bist ausgeschieden – schau zu, wie es weitergeht.</div>`
+      st = me && me.out ? `<div class="tl-info">Du bist ausgeschieden – schau zu, wie es weitergeht.</div>`
         : mine && mine.status === 'live' ? `<div class="tl-info live">Dein Match läuft: gegen ${esc(nm(mine.a === tId ? mine.b : mine.a))}</div>`
-        : mine ? `<div class="tl-info">Warte auf deinen nächsten Gegner …</div>` : '';
+        : `<div class="tl-info">Warte auf deinen nächsten Gegner …</div>`;
     } else if (T.status === 'done') {
       st = `<div class="tl-champ"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4zM7 6H4a3 3 0 0 0 3 4M17 6h3a3 3 0 0 1-3 4"/></svg><small>Turniersieger</small><b>${esc(nm(T.champion))}</b>${T.champion === tId ? '<span>Glückwunsch! 🏆</span>' : ''}</div>`;
     }
     $('#tl-status').innerHTML = st;
-    // Spieler
-    $('#tl-count').textContent = `(${T.players.length})`;
-    $('#tl-players').innerHTML = T.players.map((p) => `<li><span>${esc(p.name)}${p.id === tId ? ' <span class="muted">(du)</span>' : ''}</span>${p.id === T.hostId ? '<span class="tag">Leitung</span>' : p.online ? '' : '<span class="off">offline</span>'}</li>`).join('');
-    $('#tl-players-panel').classList.toggle('hidden', T.status !== 'lobby');
-    // Turnierbaum
+    $('#tl-count').textContent = `(${T.players.length}/${T.size})`;
+    $('#tl-players').innerHTML = T.players.map((p) => `<li><span>${esc(p.name)}${p.id === tId ? ' <span class="muted">(du)</span>' : ''}</span>${p.online ? '' : '<span class="off">offline</span>'}</li>`).join('');
+    $('#tl-players-panel').classList.toggle('hidden', T.status === 'running' || T.status === 'done');
     const R = T.rounds.length;
     $('#tl-bracket').innerHTML = R ? T.rounds.map((round, r) => `<div class="b-round"><div class="b-title">${roundName(r, R)}</div>${round.map((m) => {
       const row = (pid, legs, sc) => {
@@ -1517,36 +1889,28 @@
         const turn = m.status === 'live' && m.live && m.live.turn === pid;
         return `<div class="b-p ${cls}"><span class="b-n">${pid ? esc(nm(pid)) : m.status === 'bye' ? '<i>Freilos</i>' : '<i>offen</i>'}${turn ? '<i class="b-turn"></i>' : ''}</span>${m.status === 'live' && sc != null ? `<span class="b-sc">${sc}</span>` : ''}<span class="b-l">${m.status === 'bye' || (m.status !== 'done' && T.opts.legs === 1) ? '' : legs}</span></div>`;
       };
-      const walk = host && m.status === 'live' ? `<div class="b-walk"><button data-walk="${m.id}" data-w="${m.a}">Sieg ${esc(nm(m.a))}</button><button data-walk="${m.id}" data-w="${m.b}">Sieg ${esc(nm(m.b))}</button></div>` : '';
-      return `<div class="b-m ${m.status}">${m.status === 'live' ? '<span class="b-live">live</span>' : ''}${row(m.a, m.legsA, m.live && m.live.a)}${row(m.b, m.legsB, m.live && m.live.b)}${walk}</div>`;
+      return `<div class="b-m ${m.status}">${m.status === 'live' ? '<span class="b-live">live</span>' : m.walk ? `<span class="b-live walk">${esc(m.walk)}</span>` : ''}${row(m.a, m.legsA, m.live && m.live.a)}${row(m.b, m.legsB, m.live && m.live.b)}</div>`;
     }).join('')}</div>`).join('') : '';
     $('#tl-bracket').classList.toggle('hidden', !R);
-    $('#tl-start').classList.toggle('hidden', !(host && T.status === 'lobby'));
-    $('#tl-start').disabled = T.players.length < 2;
-    $('#tl-start').textContent = T.players.length < 2 ? 'Warte auf Mitspieler …' : `Turnier mit ${T.players.length} Spielern starten`;
-    $('#tl-wait').classList.toggle('hidden', host || T.status !== 'lobby');
     $('#tl-play').classList.toggle('hidden', !(room && room.tourn && game));
     $('#tl-leave').textContent = T.status === 'done' ? 'Zur Startseite' : 'Turnier verlassen';
   }
-  $('#tl-bracket').addEventListener('click', (e) => {
-    const b = e.target.closest('button[data-walk]');
-    if (!b) return;
-    if (!confirm(`${b.textContent} – Match kampflos vergeben (z. B. weil ein Spieler weg ist)?`)) return;
-    send({ t: 'twalkover', match: b.dataset.walk, winner: b.dataset.w });
-  });
 
   // ---------- Navigation ----------
   function goHome(force) {
     if (!force && game && !game.finished && (mode === 'online' || mode === 'local')) {
-      if (!confirm(mode === 'online' ? 'Raum verlassen?' : 'Zur Startseite? (Das Spiel wird gespeichert.)')) return;
+      const quickOrT = mode === 'online' && room && room.kind !== 'friends';
+      if (!confirm(mode === 'online' ? (quickOrT ? 'Spiel verlassen? Das zählt als Aufgabe.' : 'Raum verlassen?') : 'Zur Startseite? (Das Spiel wird gespeichert.)')) return;
     }
     if (tourn) {
-      if (!force && tourn.status === 'running' && !confirm('Turnier verlassen? Deine offenen Matches kann der Turnierleiter dann kampflos vergeben.')) return;
-      leaveTourn(false);
+      // Turnier läuft weiter im Hintergrund – nur verlassen, wenn es vorbei ist
+      if (tourn.status === 'done') leaveTourn(false);
     }
-    if (mode === 'online') leaveOnline();
+    if (queueing) { send({ t: 'quickcancel' }, true); queueing = null; }
+    if (mode === 'online' && !(room && room.tourn)) leaveOnline();
     if (mode === 'local' && game) LS.set('ds.localGame', game);
-    mode = null; game = null; lsess = null;
+    if (!(room && room.tourn)) { mode = tourn ? 'tourn' : null; game = null; }
+    lsess = null;
     detector.phase = 'idle';
     renderHome();
     show('home');
@@ -1567,6 +1931,12 @@
       }
       btn.innerHTML = `<span class="r-label">Weiterspielen</span><span class="r-scores">${saved.players.map((p) => `<span><small>${esc(p.name)}</small><b>${p.score}</b></span>`).join('')}</span>`;
     } else if (btn) btn.remove();
+    // Turnier läuft im Hintergrund? -> zurück zum Turnier
+    let tb = $('#go-tback');
+    if (tourn && tourn.status !== 'done') {
+      if (!tb) { tb = document.createElement('button'); tb.id = 'go-tback'; tb.className = 'resume'; $('#screen-home').prepend(tb); tb.onclick = () => { if (room && room.tourn && game) show('game'); else { renderTLobby(); show('tlobby'); } }; }
+      tb.innerHTML = `<span class="r-label">Zurück zum Turnier</span><span class="r-scores"><span><small>${esc(tourn.title)}</small><b>${tourn.status === 'running' ? 'läuft' : tourn.players.length + '/' + tourn.size}</b></span></span>`;
+    } else if (tb) tb.remove();
     // Schnellstart
     $$('#quick-mode button').forEach((b) => b.classList.toggle('on', Number(b.dataset.v) === settings.startScore));
     const me = settings.mePlayer ?? 0, acc = window.Account && window.Account.user;
@@ -1589,32 +1959,47 @@
   $('#quick-start').onclick = () => $('#start-local').click();
 
   $('#go-local').onclick = () => { renderLocalPlayers(); renderGameSettings($('#local-settings'), true); show('local'); };
-  $('#go-online').onclick = () => { $('#on-name').value = settings.name || ''; show('online'); };
+  $('#go-online').onclick = () => {
+    if (!requireAccount('Online-Spiele', () => $('#go-online').click())) return;
+    const A = window.Account;
+    $('#on-name').value = settings.name || (A && A.user ? A.user.name.split(' ')[0].slice(0, 16) : '');
+    show('online');
+  };
   $('#go-cam').onclick = async () => { mode = 'test'; testHits = []; renderTestHits(); show('cam'); if (await camOn()) detector.startTurn(); };
+  window.DS.camOn = () => camOn();
+  window.DS.camOff = () => camOff();
+  window.DS.detector = detector;
+  window.DS.setMode = (m) => { mode = m; };
+  window.DS.isStreaming = () => !!stream;
 
   // ---------- Start ----------
   updateTouch();
   renderHome();
   show('home');
-  const inviteCode = new URLSearchParams(location.search).get('raum');
-  const tInvite = new URLSearchParams(location.search).get('turnier');
-  if (tInvite) {
-    $('#t-name').value = settings.name || '';
-    $('#t-code').value = tInvite.toUpperCase().slice(0, 4);
-    renderTOpts();
-    show('tourn');
+  hooks.show.push(() => renderVoiceBtns());
+  renderVoiceBtns();
+  const params = new URLSearchParams(location.search);
+  const inviteCode = params.get('raum');
+  const whenAccountReady = (fn) => {
+    const A = window.Account;
+    if (A && A.ready) return fn();
+    const h = () => { window.removeEventListener('account', h); fn(); };
+    window.addEventListener('account', h);
+  };
+  if (params.get('turnier')) {
     history.replaceState(null, '', location.pathname);
+    whenAccountReady(() => $('#go-tourn').click());
   } else if (sessionStorage.getItem('ds.tourn')) {
     mode = 'tourn';
-    reconnect();
+    whenAccountReady(() => reconnect());
   } else if (inviteCode) {
     $('#on-name').value = settings.name || '';
     $('#on-code').value = inviteCode.toUpperCase().slice(0, 4);
-    show('online');
     history.replaceState(null, '', location.pathname);
+    whenAccountReady(() => { if (requireAccount('Online-Spiele', () => { $('#go-online').click(); $('#on-code').value = inviteCode.toUpperCase().slice(0, 4); })) { $('#go-online').click(); $('#on-code').value = inviteCode.toUpperCase().slice(0, 4); } });
   } else if (sessionStorage.getItem('ds.online')) {
     mode = 'online';
     room = { code: JSON.parse(sessionStorage.getItem('ds.online')).code, players: [] };
-    reconnect();
+    whenAccountReady(() => reconnect());
   }
 })();

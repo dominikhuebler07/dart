@@ -1,0 +1,7 @@
+const V=require('../public/voicecmd.js');
+const pos=["hey dartscan weiter","hey dartskind weiter","dartskin weiter","hey darts kind weiter","hey darts kann weiter","hey dart scan weiter","darts can weiter","hey datenscanner weiter","hey dartscanner weiter","hey dart skin weiter","hey darts kinn weiter","hey dartsken weiter","hey dart sken weiter","dartskön weiter","hey dads can weiter","hey dat scan weiter","hey darts gang weiter","hey dart's kind weiter","hey darts king weiter","hey dartskan weiter","hey dart counter weiter","hey tartscan weiter","hey dartsch kann weiter","hey Darts-Can weiter","Hey Dart Skin, korrigiere 4 auf 18","hey darts kenn zurück","hey dart scam weiter","hey darts scan weiter","hey dash scan weiter","hey darts gun weiter","dartskind korrigiere 4 auf 18","dart skin weiter","darts kind weiter"];
+const neg=["das kann ich weiter machen","dort kann man weiter","doch kann er weiter","tatsache weiter","der kann das","dann kann er weiter","das ist ein schöner wurf","die darts sind schön","triple zwanzig","darts","dart","das scan ich","dass kann weiter","daheim weiter","der kind weiter"];
+let bad=0;
+for(const t of pos){const r=V.parse(t);const ok=r.wake&&r.commands.length; if(!ok){bad++;console.log('MISS',t,JSON.stringify(r.rest));}}
+for(const t of neg){const r=V.parse(t);if(r.wake){bad++;console.log('FALSE',t,JSON.stringify(r.rest));}}
+require('assert')(bad === 0, 'Aktivierungswort-Varianten: ' + bad + ' Fehler'); console.log('Aktivierungswort-Varianten ok (' + (pos.length + neg.length) + ')');

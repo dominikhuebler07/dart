@@ -1,7 +1,10 @@
 rules_version = '2';
-// Sicherheitsregeln für Firestore (in der Firebase-Konsole unter Firestore → Regeln einfügen)
+// Sicherheitsregeln für Firestore: App (Statistik, Rangliste) UND Warteliste.
+// In der Firebase-Konsole unter Firestore Database → Regeln den GESAMTEN Inhalt ersetzen und „Veröffentlichen“.
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // ---------- DartScan-App ----------
 
     // Persönliche Statistik: nur der eigene Nutzer darf lesen und schreiben
     match /users/{uid} {
@@ -19,6 +22,72 @@ service cloud.firestore {
         && request.resource.data.bestCheckout is number && request.resource.data.bestCheckout <= 170
         && request.resource.data.t180 is int && request.resource.data.t180 >= 0
         && request.resource.data.wins is int && request.resource.data.wins >= 0;
+    }
+
+    // ---------- Warteliste ----------
+
+    function wl(uid) { return /databases/$(database)/documents/waitlist/$(uid); }
+    function stats() { return /databases/$(database)/documents/waitlistMeta/stats; }
+    function codeDoc(c) { return /databases/$(database)/documents/waitlistCodes/$(c); }
+    function verified() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+    // Wird gerade (in derselben Transaktion) der eigene Wartelisten-Eintrag angelegt?
+    function joiningNow() {
+      return !exists(wl(request.auth.uid)) && existsAfter(wl(request.auth.uid));
+    }
+
+    // Zähler: öffentlich lesbar, erhöht sich nur um 1 und nur zusammen mit einem neuen Eintrag
+    match /waitlistMeta/stats {
+      allow get: if true;
+      allow create: if verified() && request.resource.data.keys().hasOnly(['count'])
+        && request.resource.data.count == 1
+        && joiningNow() && getAfter(wl(request.auth.uid)).data.position == 1;
+      allow update: if verified() && request.resource.data.keys().hasOnly(['count'])
+        && request.resource.data.count == resource.data.count + 1
+        && joiningNow() && getAfter(wl(request.auth.uid)).data.position == request.resource.data.count;
+    }
+
+    // Einladungscodes: Code → Nutzer (nur einzeln abrufbar, nicht auflistbar)
+    match /waitlistCodes/{code} {
+      allow get: if true;
+      allow create: if verified() && request.resource.data.keys().hasOnly(['uid'])
+        && request.resource.data.uid == request.auth.uid
+        && joiningNow() && getAfter(wl(request.auth.uid)).data.code == code;
+      allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
+    }
+
+    // Einträge: nur der eigene ist lesbar (E-Mail bleibt privat)
+    match /waitlist/{uid} {
+      allow get: if request.auth != null && request.auth.uid == uid;
+      allow delete: if request.auth != null && request.auth.uid == uid;
+
+      // Neuer Eintrag: Platz = Zähler + 1, Bonus nur für die ersten 200, bestätigte E-Mail Pflicht
+      allow create: if verified() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['email', 'name', 'position', 'bonus', 'code', 'referredBy', 'invited', 'createdAt'])
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.name is string && request.resource.data.name.size() <= 24
+        && request.resource.data.position is int
+        && ((exists(stats()) && request.resource.data.position == get(stats()).data.count + 1)
+            || (!exists(stats()) && request.resource.data.position == 1))
+        && getAfter(stats()).data.count == request.resource.data.position
+        && ((request.resource.data.position <= 200 && request.resource.data.bonus == 50)
+            || (request.resource.data.position > 200 && request.resource.data.bonus == 0))
+        && request.resource.data.invited == 0
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.code is string && request.resource.data.code.matches('^[A-HJ-NP-Z2-9]{6}$')
+        && !exists(codeDoc(request.resource.data.code))
+        && getAfter(codeDoc(request.resource.data.code)).data.uid == uid
+        && request.resource.data.referredBy is string
+        && (request.resource.data.referredBy == ''
+            || (request.resource.data.referredBy != uid && exists(wl(request.resource.data.referredBy))));
+
+      // Einladung: ein neuer Spieler erhöht beim Einladenden „invited“ um genau 1
+      allow update: if verified() && request.auth.uid != uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['invited'])
+        && request.resource.data.invited == resource.data.invited + 1
+        && joiningNow()
+        && getAfter(wl(request.auth.uid)).data.referredBy == uid;
     }
   }
 }

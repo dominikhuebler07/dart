@@ -10,7 +10,7 @@ const api = {
   onChange(fn) { listeners.add(fn); fn(api.user); return () => listeners.delete(fn); },
 };
 window.Account = api;
-const emit = () => { for (const fn of listeners) { try { fn(api.user); } catch (e) { console.error(e); } } window.dispatchEvent(new CustomEvent('account', { detail: api.user })); };
+const emit = () => { api.ready = true; for (const fn of listeners) { try { fn(api.user); } catch (e) { console.error(e); } } window.dispatchEvent(new CustomEvent('account', { detail: api.user })); };
 
 // verständliche Fehlermeldungen
 const MSG = {
@@ -29,7 +29,32 @@ const MSG = {
 };
 const nice = (e) => MSG[e && e.code] || (e && e.message) || 'Unbekannter Fehler';
 
+// Entwickler-Modus NUR auf dem eigenen Rechner (localhost) ohne Firebase: Test-Konto über ?dev=Name.
+// Der Server akzeptiert solche Test-Anmeldungen nur, wenn dort AUTH_DEV=1 gesetzt ist (auf Render nie).
+function devMode() {
+  if (!/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) return false;
+  const q = new URLSearchParams(location.search).get('dev');
+  if (q) { try { sessionStorage.setItem('ds.dev', q); } catch (_) {} }
+  let name = q; try { name = name || sessionStorage.getItem('ds.dev'); } catch (_) {}
+  if (!name) return false;
+  const uid = 'dev-' + name.toLowerCase().replace(/[^a-z0-9]/g, '');
+  api.available = true; api.dev = true;
+  api.user = { uid, name, email: name + '@test', photo: '' };
+  api.getToken = async () => `dev:${uid}:${name}`;
+  const mem = {};
+  api.loadUser = async () => mem.user || null;
+  api.loadStats = async () => (mem.user && mem.user.stats) || null;
+  api.saveStats = async (stats) => { mem.user = Object.assign(mem.user || {}, { stats }); };
+  api.saveLearn = async (learn) => { mem.user = Object.assign(mem.user || {}, { learn }); };
+  api.saveLeaderboard = async () => {};
+  api.fetchLeaderboard = async () => [];
+  api.signOut = () => { try { sessionStorage.removeItem('ds.dev'); } catch (_) {} api.user = null; emit(); };
+  emit();
+  return true;
+}
+
 async function start() {
+  if (devMode()) return;
   if (!cfg || !cfg.apiKey) { emit(); return; }
   try {
     const appMod = await import(`https://www.gstatic.com/firebasejs/${V}/firebase-app.js`);
@@ -80,9 +105,22 @@ async function start() {
     };
     api.saveStats = async (stats) => {
       if (!api.user) return;
-      try { await S.setDoc(S.doc(db, 'users', api.user.uid), { stats, name: api.user.name, updatedAt: S.serverTimestamp() }); }
+      try { await S.setDoc(S.doc(db, 'users', api.user.uid), { stats, name: api.user.name, updatedAt: S.serverTimestamp() }, { merge: true }); }
       catch (e) { throw new Error(nice(e)); }
     };
+    // ganzes Nutzer-Dokument (Statistik, Lernpfad, Wartelisten-Bonus-Merker)
+    api.loadUser = async () => {
+      if (!api.user) return null;
+      try { const snap = await S.getDoc(S.doc(db, 'users', api.user.uid)); return snap.exists() ? snap.data() : null; }
+      catch (e) { throw new Error(nice(e)); }
+    };
+    api.saveLearn = async (learn) => {
+      if (!api.user) return;
+      try { await S.setDoc(S.doc(db, 'users', api.user.uid), { learn, name: api.user.name, updatedAt: S.serverTimestamp() }, { merge: true }); }
+      catch (e) { console.warn('Lernpfad nicht gespeichert', e); }
+    };
+    // Anmelde-Ausweis für den Server (Online-Spiele, Turniere, Melden)
+    api.getToken = async (force) => (auth.currentUser ? auth.currentUser.getIdToken(!!force) : null);
     api.saveLeaderboard = async (entry) => {
       if (!api.user) return;
       try { await S.setDoc(S.doc(db, 'leaderboard', api.user.uid), { ...entry, updatedAt: S.serverTimestamp() }); }
