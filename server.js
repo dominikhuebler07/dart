@@ -49,7 +49,7 @@ app.get('/tts', async (req, res) => {
   }
 });
 
-// ---------- Meldungen (Fair Play): E-Mail über Brevo + Übersicht unter /admin/meldungen?key=ADMIN_KEY ----------
+// ---------- Meldungen (Fair Play): Nachricht per Telegram (oder Discord/Brevo) + Übersicht unter /admin/meldungen?key=ADMIN_KEY ----------
 const reports = createReports();
 app.get('/admin/meldungen', (req, res) => reports.page(req, res));
 

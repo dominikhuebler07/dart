@@ -90,4 +90,21 @@ const want = (...ds) => ds.map((d) => Board.label(Board.score(d[0], d[1]))).join
   step([], { marks: 18 });
   ok(log.cleared === 2, '3 Pfeile gezogen, mehr Spuren: weiter (' + det.lastClear + ')');
 }
+{ // „Weiter“ von Hand, nachdem die Pfeile schon gezogen sind – aber auf der Scheibe hat sich sonst etwas verändert
+  // (Spuren, Licht). Früher wartete die Erkennung dann auf ein Ziehen, das nie kam, und Auto-Weiter ging Runden lang nicht.
+  const { det, log, step } = setup();
+  step([]); step([A]); step([A, B]); step([A, B, C]);
+  det.phase = 'pull';
+  const o = { marks: 40 };
+  det.cb.onCleared = () => {};
+  step([], o, 1);              // gezogen, aber noch nicht ausgewertet
+  det.startTurn();             // „Weiter“ von Hand
+  ok(!det.awaitClear, 'Weiter von Hand nach dem Ziehen: keine Sperre „Pfeile ziehen“');
+  det.cb.onCleared = () => { log.cleared++; det.startTurn(); };
+  step([], o);
+  step([C], o); step([B, C], o); step([A, B, C], o);
+  det.phase = 'pull';
+  step([], o, 14);
+  ok(log.cleared === 1, 'danach klappt Auto-Weiter sofort wieder (' + det.lastClear + ')');
+}
 console.log(`Pfeile-ziehen-Tests ok (${n})`);

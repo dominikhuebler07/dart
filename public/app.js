@@ -78,6 +78,7 @@
     document.body.classList.toggle('in-game', name === 'game' || name === 'learnplay');
     $$('#tabbar button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
     window.scrollTo(0, 0);
+    updateZoomRow();
     hooks.show.forEach((fn) => fn(name));
   }
 
@@ -264,6 +265,29 @@
 
   const myTurn = () => !!game && (mode === 'local' || game.players[game.current].id === myId);
   const canEdit = () => myTurn() || (mode === 'online' && room && room.hostId === myId);
+  window.DS.canEdit = () => canEdit();
+  // Befehle vom gekoppelten Bildschirm (Laptop): Wurf korrigieren/eintragen, weiter, zurück
+  window.DS.displayCmd = (c) => {
+    if (!game || screen !== 'game') return;
+    const d = c.dart ? { seg: c.dart.seg, mult: c.dart.mult, value: c.dart.seg * c.dart.mult } : null;
+    const lbl = d ? B.label(d) : '';
+    if (c.kind === 'correct') {
+      if (c.which === 'cur') {
+        if (!canEdit() || !game.turn.darts[c.index]) return;
+        correctDart(c.index, d, false);
+      } else {
+        if (game.turn.darts.length) return toast('Erst die aktuelle Aufnahme fertig machen');
+        correctDart(c.index, d, false);
+      }
+      toast('Am Bildschirm korrigiert: ' + lbl);
+    } else if (c.kind === 'add') {
+      if (!myTurn() || game.finished || Game.turnComplete(game)) return;
+      act.dart(d); detector.rebaseline(); toast('Am Bildschirm eingetragen: ' + lbl);
+    } else if (c.kind === 'remove') {
+      if (canEdit() && game.turn.darts[c.index]) act.remove(c.index);
+    } else if (c.kind === 'next') { if (canEdit() && !game.finished) act.next(); }
+    else if (c.kind === 'undo') { if (canEdit()) act.undo(); }
+  };
 
   // ---------- Anzeige ----------
   function update() {
@@ -365,6 +389,18 @@
         if (Game.checkout(p.score, 3, game.doubleOut)) parts.push('Rest ' + p.score);
       }
       speak(parts);
+      // Sounds: Einschlag, und am Ende der Aufnahme ggf. 180 / gute Aufnahme / überworfen
+      const S = window.Sound;
+      if (S) {
+        S.hit(d.void ? 0 : d.mult);
+        if (t.bust) setTimeout(() => S.bust(), 160);
+        else if (cur.n === 3 && !t.won) {
+          const total = t.darts.reduce((s2, x) => s2 + x.value, 0);
+          if (total === 180) setTimeout(() => S.max(), 180); else if (total >= 100) setTimeout(() => S.good(total), 180);
+        }
+      }
+    } else if (ann && ann.id !== cur.id && cur.n === 0 && !game.finished) {
+      window.Sound && window.Sound.turn(); // nächster Spieler
     }
     ann = cur;
   }
@@ -375,6 +411,7 @@
     if (!game.finished) { if (dlg.open) dlg.close(); return; }
     if (winShownFor === game.turnId) return;
     winShownFor = game.turnId;
+    window.Sound && setTimeout(() => window.Sound.win(), 250);
     const idx = game.players.findIndex((p) => p.id === game.winner);
     const w = game.players[idx];
     const st = Game.stats(game, idx);
@@ -415,69 +452,99 @@
     const b = $('#b-mic');
     b.classList.toggle('hidden', !SR);
     b.classList.toggle('on', micOn && listening);
-    b.classList.toggle('wait', micOn && !listening);
+    b.classList.toggle('wait', micOn && !listening && !pausedForSpeech);
     b.setAttribute('aria-pressed', String(micOn));
-    $('#b-mic-label').textContent = !micOn ? 'Sprachbefehle' : listening ? 'Hört zu' : micErr ? micErr : 'Startet …';
+    $('#b-mic-label').textContent = !micOn ? 'Sprachbefehle' : pausedForSpeech ? 'Ansage …' : listening ? 'Hört zu' : micErr ? micErr : 'Startet …';
   }
   let lastChime = 0, ignoreUntil = 0;
   const caption = (t, cls) => { const c = $('#mic-caption'); c.textContent = t || ''; c.className = 'mic-caption' + (cls ? ' ' + cls : ''); };
   function chime() { if (Date.now() - lastChime > 2500) { lastChime = Date.now(); window.Sound && window.Sound.wake(); } }
 
+  // Spracherkennung, die dauerhaft zuhört:
+  //  - Während DartScan selbst spricht (Ansage, Töne), ist das Mikro kurz aus – sonst hört es die eigene Ansage,
+  //    vermischt sie mit dem nächsten Befehl, und auf Android bleibt die Erkennung danach oft „hängen“.
+  //  - Wächter: hängt eine Sitzung (keine Ereignisse mehr), wird sie neu gestartet; lange Sitzungen werden erneuert.
+  //  - Doppelte Ergebnisse (Android liefert manche Sätze zweimal) werden ignoriert.
+  let lastEvent = 0, pausedForSpeech = false, lastFinal = { text: '', t: 0 };
   function micStart() {
     micRestartT = null;
     if (!SR) { toast('Sprachbefehle gehen in diesem Browser nicht – am besten Chrome oder Edge verwenden.', 4500); return; }
     micOn = true;
     if (rec) return setMicUI();
-    rec = new SR();
-    rec.lang = 'de-DE'; rec.continuous = true; rec.interimResults = true; rec.maxAlternatives = 5;
-    rec.onresult = (e) => {
+    if (selfSpeaking()) { pausedForSpeech = true; setMicUI(); return; } // startet nach der Ansage
+    const r = new SR();
+    rec = r;
+    r.lang = 'de-DE'; r.continuous = true; r.interimResults = true; r.maxAlternatives = 5;
+    r.onresult = (e) => {
+      if (rec !== r) return;
+      lastEvent = Date.now();
+      if (selfSpeaking()) return; // eigene Ansage – nicht als Befehl werten
       for (let i = e.resultIndex; i < e.results.length; i++) {
-        const r = e.results[i];
-        const alts = Array.from(r, (a) => a.transcript);
-        // Die eigene Ansage enthält nie "DartScan" oder "korrigiere" – sie kann also keinen Befehl auslösen.
-        caption('„' + alts[0].trim() + '“', r.isFinal ? '' : 'live');
-        if (!r.isFinal) {
+        const res = e.results[i];
+        const alts = Array.from(res, (a) => a.transcript);
+        caption('„' + alts[0].trim() + '“', res.isFinal ? '' : 'live');
+        if (!res.isFinal) {
           // Aktivierungswort schon während des Sprechens erkennen -> sofort Signalton
           if (alts.some((a) => VC.findWake(VC.normalize(a)) >= 0)) { chime(); wakeUntil = Date.now() + 8000; }
           continue;
         }
+        const key = VC.normalize(alts[0]);
+        if (key && key === lastFinal.text && Date.now() - lastFinal.t < 2000) continue; // doppelt geliefert
+        lastFinal = { text: key, t: Date.now() };
         handleSpeech(alts);
       }
     };
-    rec.onstart = () => { listening = true; micErr = ''; recStartedAt = Date.now(); setMicUI(); };
-    rec.onaudiostart = () => { listening = true; setMicUI(); };
-    rec.onerror = (e) => {
+    r.onstart = () => { if (rec !== r) return; listening = true; micErr = ''; recStartedAt = Date.now(); lastEvent = Date.now(); setMicUI(); };
+    r.onaudiostart = r.onsoundstart = r.onspeechstart = () => { if (rec !== r) return; listening = true; lastEvent = Date.now(); setMicUI(); };
+    r.onerror = (e) => {
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
         micOn = false; settings.mic = false; saveSettings();
         toast('Mikrofon nicht erlaubt – in den Browser-Einstellungen für diese Seite freigeben.', 5000);
       } else if (e.error === 'network') micErr = 'Kein Netz';
       else if (e.error === 'audio-capture') { micErr = 'Kein Mikrofon'; }
-      // 'no-speech' und 'aborted' sind normal (Stille) -> einfach neu starten
+      // 'no-speech' und 'aborted' sind normal (Stille / von uns beendet) -> einfach neu starten
     };
     // Die Erkennung beendet sich nach Stille von selbst -> neu starten, solange eingeschaltet.
     // Bricht sie sofort wieder ab (Netz weg, Mikro belegt), mit wachsender Pause neu versuchen statt Dauerschleife.
-    rec.onend = () => {
+    r.onend = () => {
+      if (rec !== r) return; // alte Sitzung (schon ersetzt)
       const ran = recStartedAt ? Date.now() - recStartedAt : 0;
       rec = null; listening = false; recStartedAt = 0;
-      micFails = ran > 1500 ? 0 : micFails + 1;
-      const wait = micFails ? Math.min(5000, 250 * 2 ** micFails) : 120;
-      clearTimeout(micRestartT);
-      if (micOn) micRestartT = setTimeout(micStart, wait);
+      micFails = ran > 1500 || pausedForSpeech ? 0 : micFails + 1;
+      const wait = micFails ? Math.min(5000, 250 * 2 ** micFails) : 80;
+      clearTimeout(micRestartT); micRestartT = null;
+      if (micOn && !pausedForSpeech) micRestartT = setTimeout(micStart, wait);
       if (micFails === 4) toast('Spracherkennung startet nicht richtig – Internet und Mikrofon prüfen', 4000);
       setMicUI();
     };
-    try { rec.start(); } catch (_) { rec = null; clearTimeout(micRestartT); micRestartT = setTimeout(micStart, 1000); }
+    try { r.start(); } catch (_) { rec = null; clearTimeout(micRestartT); micRestartT = setTimeout(micStart, 1000); }
     setMicUI();
   }
-  // Wächter: läuft die Erkennung nicht, obwohl sie an sein soll (z. B. nach Bildschirm aus), neu starten
-  setInterval(() => { if (micOn && !rec && !micRestartT) micStart(); }, 4000);
+  // harte Beendigung einer Sitzung (onend kommt manchmal nicht -> nicht darauf warten)
+  function micKill() {
+    const r = rec;
+    rec = null; listening = false; recStartedAt = 0;
+    if (r) { try { r.abort(); } catch (_) {} }
+  }
+  const selfSpeaking = () => !!(window.Speech && window.Speech.talking);
+  // Ansage läuft -> Mikro pausieren; danach sofort wieder zuhören
+  setInterval(() => {
+    if (!micOn) return;
+    const speaking = selfSpeaking();
+    if (speaking && rec && !pausedForSpeech) { pausedForSpeech = true; micKill(); setMicUI(); return; }
+    if (!speaking && pausedForSpeech) { pausedForSpeech = false; clearTimeout(micRestartT); micRestartT = null; micStart(); return; }
+    // Wächter: läuft nicht, obwohl an (z. B. nach Bildschirm aus) -> starten
+    if (!rec && !micRestartT && !pausedForSpeech) { micStart(); return; }
+    // hängt (seit 20 s kein einziges Ereignis) oder läuft sehr lange -> erneuern
+    if (rec && recStartedAt && (Date.now() - lastEvent > 20000 || Date.now() - recStartedAt > 90000)) { micKill(); micStart(); }
+  }, 250);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible' || !micOn) return;
-    if (rec) { try { rec.abort(); } catch (_) {} } else micStart();
+    micKill(); clearTimeout(micRestartT); micRestartT = setTimeout(micStart, 300);
   });
   function micStop() {
-    micOn = false; clearTimeout(micRestartT); micRestartT = null; listening = false; micErr = '';
-    if (rec) { try { rec.abort(); } catch (_) {} rec = null; }
+    micOn = false; clearTimeout(micRestartT); micRestartT = null; listening = false; micErr = ''; pausedForSpeech = false;
+    micKill();
     caption('');
     setMicUI();
   }
@@ -585,6 +652,8 @@
     $('#s-track').checked = settings.autoTrack !== false;
     $('#s-automiss').checked = settings.autoMiss === true;
     $('#s-lock').checked = settings.lockCam !== false;
+    $('#s-sfx').checked = !!(window.Sound && window.Sound.on);
+    $('#s-autozoom').checked = settings.autoZoom !== false;
     renderVoices();
     $('#s-direct').checked = settings.voiceDirect !== false;
     $('#s-report-n').textContent = reports.length;
@@ -613,6 +682,11 @@
   $('#s-voicetest').onclick = () => window.Speech.test();
   $('#s-direct').onchange = (e) => { settings.voiceDirect = e.target.checked; saveSettings(); };
   $('#s-autonext').onchange = (e) => { settings.autoNext = e.target.checked; saveSettings(); };
+  $('#s-sfx').onchange = (e) => { if (window.Sound) { window.Sound.on = e.target.checked; if (e.target.checked) window.Sound.hit(3); } };
+  $('#s-autozoom').onchange = (e) => {
+    settings.autoZoom = e.target.checked; saveSettings();
+    if (settings.autoZoom) maybeAutoZoom(true); else applyZoom({ z: 1, cx: 0.5, cy: 0.5 });
+  };
   $('#s-track').onchange = (e) => { settings.autoTrack = e.target.checked; detector.autoTrack = settings.autoTrack; saveSettings(); };
   $('#s-automiss').onchange = (e) => { settings.autoMiss = e.target.checked; detector.autoMiss = settings.autoMiss; saveSettings(); };
   $('#s-lock').onchange = async (e) => {
@@ -671,7 +745,7 @@
   detector.autoMiss = settings.autoMiss === true;
   window.DartScanDebug = { detector }; // für die Fehlersuche in der Browser-Konsole
   function saveCalib() {
-    if (detector.calib) LS.set('ds.cal', { pts: detector.calib, view: detector.view, hz: detector.hz, bias: detector.tipBias || 0 });
+    if (detector.calib) LS.set('ds.cal', { pts: detector.calib, view: detector.view, hz: detector.hz, bias: detector.tipBias || 0, user: !!detector.userOriented });
   }
   (() => {
     const c = LS.get('ds.cal', null);
@@ -679,6 +753,7 @@
       detector.view = c.view || detector.view;
       detector.hz = c.hz || 1;
       detector.tipBias = c.bias || 0;
+      detector.userOriented = !!c.user; // 20 wurde vom Nutzer selbst angetippt
       detector.setCalibration(c.pts);
       return;
     }
@@ -725,7 +800,7 @@
   const video = $('#video');
   const canvas = $('#cam-canvas');
   const ctx = canvas.getContext('2d');
-  let stream = null, raf = null, debug = false, wakeLock = null;
+  let stream = null, debug = false, wakeLock = null;
 
   async function camOn() {
     if (stream) return true;
@@ -751,14 +826,16 @@
       if (c.zoom && c.zoom.max > Math.max(1, c.zoom.min)) hwCaps = { min: Math.max(1, c.zoom.min), max: c.zoom.max };
     } catch (_) {}
     hwActual = 1;
-    $('#zoom-row').classList.remove('hidden');
+    updateZoomRow();
+    enableMotion();
     await applyZoom(zoom, false);
     detector.start(video);
     requestWakeLock();
-    cancelAnimationFrame(raf);
-    draw();
+    layoutKey = '';
+    invalidate();
     // Belichtung/Weißabgleich/Fokus nach kurzer Eingewöhnung fixieren: verhindert Helligkeitssprünge zwischen den Würfen
     if (settings.lockCam !== false) setTimeout(() => { if (stream) lockCamera(true); }, 2500);
+    startVerify(); // gespeicherte Kalibrierung nicht blind übernehmen: Scheibe frisch suchen und vergleichen
     if (!detector.H) {
       lastStatusText = 'Suche die Scheibe …';
       if (mode === 'test') setTimeout(startCalibration, 300); // Kamera einrichten: mit Anzeige
@@ -793,8 +870,8 @@
     if (stream) stream.getTracks().forEach((t) => t.stop());
     stream = null;
     detector.stop();
-    cancelAnimationFrame(raf);
     $('#cam-off').classList.remove('hidden');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
     stopCalibration();
     $('#zoom-row').classList.add('hidden');
     setCamStatus('');
@@ -808,12 +885,15 @@
 
   $('#b-cam-on').onclick = camOn;
   $('#b-cam-off').onclick = camOff;
-  $('#b-debug').onclick = () => { debug = !debug; $('#b-debug').classList.toggle('on', debug); };
+  $('#b-debug').onclick = () => { debug = !debug; $('#b-debug').classList.toggle('on', debug); invalidate(); };
+  // Zoom-Regler gibt es nur beim Kamera-Einrichten – im Spiel stellt sich der Zoom von selbst ein
+  function updateZoomRow() { $('#zoom-row').classList.toggle('hidden', !(stream && mode === 'test')); $('#b-debug').classList.toggle('hidden', mode !== 'test'); }
+  window.DS.updateZoomRow = updateZoomRow;
   // In Spiel/Lernen gibt es kein Kalibrieren von Hand: der Knopf sucht die Scheibe einfach automatisch neu.
   $('#b-calib').onclick = async () => {
     if (!(await camOn())) return;
     if (mode === 'test') return startCalibration();
-    searchNow = true;
+    searchNow = true; searchFresh = true; detector.userOriented = false;
     setCamStatus('Suche die Scheibe …');
     toast('Suche die Scheibe …');
   };
@@ -821,7 +901,7 @@
   // ---------- Zoom ----------
   // Zustand bezogen aufs Kamerabild OHNE Hardware-Zoom: z = Gesamtzoom, cx/cy = Mitte des Ausschnitts (0..1)
   const zoom = Object.assign({ z: 1, cx: 0.5, cy: 0.5 }, LS.get('ds.zoom', {}));
-  let hwCaps = null, hwActual = 1, gestureView = null, zoomChain = Promise.resolve();
+  let hwCaps = null, hwActual = 1, zoomChain = Promise.resolve();
   const track = () => stream && stream.getVideoTracks()[0];
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const zMax = () => (hwCaps ? Math.min(12, Math.max(5, hwCaps.max * 2)) : 5);
@@ -861,8 +941,8 @@
         catch (_) { hz = hwActual; }
       } else hz = hwCaps ? hwActual : 1;
       detector.setView(viewFor(zoom, hz), hz);
-      gestureView = null;
       saveCalib();
+      invalidate();
       updateZoomUI();
       setTimeout(() => showQuality(false), 400);
     });
@@ -880,42 +960,12 @@
     applyZoom({ z: 0.94 / Math.max(x1 - x0, y1 - y0), cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 });
     toast('Auf die Scheibe gezoomt');
   }
-  $('#z-range').oninput = (e) => { gestureView = viewFor(clampZoom({ ...zoom, z: Number(e.target.value) }, detector.hz), detector.hz); $('#z-val').textContent = Number(e.target.value).toFixed(1).replace('.', ',') + '×'; };
+  $('#z-range').oninput = (e) => { $('#z-val').textContent = Number(e.target.value).toFixed(1).replace('.', ',') + '×'; };
   $('#z-range').onchange = (e) => applyZoom({ ...zoom, z: Number(e.target.value) });
   $('#z-in').onclick = () => applyZoom({ ...zoom, z: zoom.z * 1.25 });
   $('#z-out').onclick = () => applyZoom({ ...zoom, z: zoom.z / 1.25 });
   $('#z-fit').onclick = zoomToBoard;
   $('#z-reset').onclick = () => applyZoom({ z: 1, cx: 0.5, cy: 0.5 });
-
-  // Pinch-Zoom mit zwei Fingern, Verschieben mit einem Finger (außerhalb der Kalibrierung)
-  const pointers = new Map();
-  let gesture = null;
-  function gestureStart() {
-    const ps = [...pointers.values()];
-    if (ps.length === 2) {
-      const mu = [(ps[0][0] + ps[1][0]) / 2, (ps[0][1] + ps[1][1]) / 2];
-      gesture = { type: 'pinch', d0: Math.hypot(ps[0][0] - ps[1][0], ps[0][1] - ps[1][1]) || 0.01, st: { ...zoom }, mu };
-    } else if (ps.length === 1 && zoom.z > 1.01) gesture = { type: 'pan', p0: ps[0], st: { ...zoom } };
-    else gesture = null;
-  }
-  function gestureMove() {
-    if (!gesture) return;
-    const ps = [...pointers.values()];
-    let st;
-    if (gesture.type === 'pinch' && ps.length === 2) {
-      const z = gesture.st.z * Math.hypot(ps[0][0] - ps[1][0], ps[0][1] - ps[1][1]) / gesture.d0;
-      const m1x = gesture.st.cx + (gesture.mu[0] - 0.5) / gesture.st.z, m1y = gesture.st.cy + (gesture.mu[1] - 0.5) / gesture.st.z;
-      st = { z, cx: m1x - (gesture.mu[0] - 0.5) / z, cy: m1y - (gesture.mu[1] - 0.5) / z };
-    } else if (gesture.type === 'pan' && ps.length === 1) {
-      st = { z: gesture.st.z, cx: gesture.st.cx - (ps[0][0] - gesture.p0[0]) / gesture.st.z, cy: gesture.st.cy - (ps[0][1] - gesture.p0[1]) / gesture.st.z };
-    } else return;
-    gesture.last = clampZoom(st);
-    gestureView = viewFor(clampZoom(st, detector.hz), detector.hz);
-  }
-  function gestureEnd() {
-    if (gesture && gesture.last) applyZoom(gesture.last);
-    gesture = null;
-  }
 
   // Debug-Maske
   const maskCanvas = document.createElement('canvas');
@@ -936,52 +986,72 @@
     if (maskCanvas.width) ctx.drawImage(maskCanvas, 0, 0, W, H);
   }
 
+  // Raster als fertiger Pfad (wird nur neu berechnet, wenn sich Kalibrierung oder Größe ändern)
+  let gridCache = { key: null, path: null, nums: null };
   function drawGrid(Hinv, W, H, alpha, dpr) {
     if (!Hinv) return;
-    const P = (x, y) => { const [u, v] = D.applyH(Hinv, x, y); return [u * W, v * H]; };
+    const key = Hinv.join() + ':' + W + ':' + H;
+    if (gridCache.key !== key) {
+      const P = (x, y) => { const [u, v] = D.applyH(Hinv, x, y); return [u * W, v * H]; };
+      const path = new Path2D();
+      for (const r of [B.R.bullIn, B.R.bullOut, B.R.trebleIn, B.R.trebleOut, B.R.doubleIn, B.R.doubleOut]) {
+        for (let a = 0; a <= 360; a += 4) { const [x, y] = P(...B.polar(r, a)); a === 0 ? path.moveTo(x, y) : path.lineTo(x, y); }
+      }
+      for (let i = 0; i < 20; i++) {
+        const [x1, y1] = P(...B.polar(B.R.bullOut, i * 18 - 9)), [x2, y2] = P(...B.polar(B.R.doubleOut, i * 18 - 9));
+        path.moveTo(x1, y1); path.lineTo(x2, y2);
+      }
+      gridCache = { key, path, nums: B.ORDER.map((n, i) => [n, ...P(...B.polar(190, i * 18))]) };
+    }
     ctx.save();
     ctx.strokeStyle = `rgba(242,193,78,${alpha})`;
     ctx.lineWidth = 1.4 * dpr;
-    for (const r of [B.R.bullIn, B.R.bullOut, B.R.trebleIn, B.R.trebleOut, B.R.doubleIn, B.R.doubleOut]) {
-      ctx.beginPath();
-      for (let a = 0; a <= 360; a += 4) {
-        const [x, y] = P(...B.polar(r, a));
-        a === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-    }
-    ctx.beginPath();
-    for (let i = 0; i < 20; i++) {
-      const [x1, y1] = P(...B.polar(B.R.bullOut, i * 18 - 9));
-      const [x2, y2] = P(...B.polar(B.R.doubleOut, i * 18 - 9));
-      ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
-    }
-    ctx.stroke();
+    ctx.stroke(gridCache.path);
     ctx.fillStyle = `rgba(242,193,78,${Math.min(1, alpha + 0.3)})`;
     ctx.font = `700 ${13 * dpr}px system-ui`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    B.ORDER.forEach((n, i) => { const [x, y] = P(...B.polar(190, i * 18)); ctx.fillText(n, x, y); });
+    for (const [n, x, y] of gridCache.nums) ctx.fillText(n, x, y);
     ctx.restore();
   }
 
-  function draw() {
-    raf = requestAnimationFrame(draw);
+  // ---------- Kamerabild anzeigen ----------
+  // Das Video zeigt der Browser selbst an (Grafikkarte, kein Umkopieren), der Zoom-Ausschnitt ist nur CSS.
+  // Darüber liegt eine durchsichtige Ebene für Raster und Treffer – sie wird nur neu gezeichnet, wenn sich etwas ändert.
+  const camWrap = canvas.parentElement;
+  camWrap.insertBefore(video, canvas);
+  let layoutKey = '', drawPending = false, lastHinv = null, tipShown = 0;
+  function layoutVideo() {
     const vw = video.videoWidth, vh = video.videoHeight;
-    if (!vw) return;
-    const cw = canvas.clientWidth || 320;
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    const W = Math.round(cw * dpr), H = Math.round(((cw * vh) / vw) * dpr);
-    if (canvas.width !== W || canvas.height !== H) {
-      canvas.width = W; canvas.height = H;
-      canvas.style.height = (cw * vh) / vw + 'px';
+    if (!vw) return null;
+    const v = detector.view;
+    const cw = camWrap.clientWidth || 320;
+    const ch = (cw * (v.h * vh)) / (v.w * vw);
+    const key = [cw, vw, vh, v.x, v.y, v.w, v.h].join();
+    if (key !== layoutKey) {
+      layoutKey = key;
+      canvas.style.height = ch + 'px';
+      const sw = cw / v.w, sh = (sw * vh) / vw;
+      video.style.width = sw + 'px'; video.style.height = sh + 'px';
+      video.style.transform = `translate(${-v.x * sw}px, ${-v.y * sh}px)`;
     }
-    const view = gestureView || detector.view;
-    ctx.drawImage(video, view.x * vw, view.y * vh, view.w * vw, view.h * vh, 0, 0, W, H);
-    if (gestureView) return; // während des Zoomens keine Overlays (Raster passt erst danach)
+    return { cw, ch };
+  }
+  function invalidate() { if (!drawPending) { drawPending = true; requestAnimationFrame(draw); } }
+  function draw() {
+    drawPending = false;
+    if (!stream) return;
+    const L = layoutVideo();
+    if (!L) { setTimeout(invalidate, 100); return; }
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const W = Math.round(L.cw * dpr), H = Math.round(L.ch * dpr);
+    if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+    else ctx.clearRect(0, 0, W, H);
+    lastHinv = detector.Hinv;
     if (debug && !calib) drawMask(W, H);
     if (calib) drawCalib(W, H, dpr);
     else drawGrid(detector.Hinv, W, H, debug ? 0.7 : 0.28, dpr);
-    if (lastTip && Date.now() - lastTip.t < 3500 && !calib) {
+    tipShown = lastTip && Date.now() - lastTip.t < 3500 && !calib ? lastTip.t : 0;
+    if (tipShown) {
       const x = lastTip.u * W, y = lastTip.v * H;
       ctx.save();
       ctx.strokeStyle = '#ece0bf'; ctx.lineWidth = 3 * dpr;
@@ -994,7 +1064,16 @@
       ctx.fillText(lastTip.label, x + 18 * dpr, y + 6 * dpr);
       ctx.restore();
     }
+    if (calib || debug) invalidate(); // nur beim Einrichten/Debug laufend (Lupe, Maske)
   }
+  // Günstige Prüfung, ob neu gezeichnet werden muss (Raster nachgeführt, Treffer-Markierung abgelaufen, Größe)
+  setInterval(() => {
+    if (!stream || drawPending) return;
+    const tipWant = lastTip && Date.now() - lastTip.t < 3500 ? lastTip.t : 0;
+    if (detector.Hinv !== lastHinv || tipWant !== tipShown) invalidate();
+    else { const v = detector.view; if ([camWrap.clientWidth || 320, video.videoWidth, video.videoHeight, v.x, v.y, v.w, v.h].join() !== layoutKey) invalidate(); }
+  }, 150);
+  window.addEventListener('resize', () => invalidate());
 
   // ---------- Kalibrierung ----------
   const PROMPTS = [
@@ -1022,7 +1101,7 @@
     updateCalibHint();
   }
   // Wischen über das Kamerabild scrollt die Seite – außer beim Kalibrieren und wenn gezoomt (dann verschiebt es den Ausschnitt)
-  function updateTouch() { canvas.classList.toggle('capture', !!calib || zoom.z > 1.01); }
+  function updateTouch() { canvas.classList.toggle('capture', !!calib); invalidate(); }
   function stopCalibration() {
     calib = null;
     setTimeout(updateTouch, 0);
@@ -1044,8 +1123,9 @@
     $('#c-auto').classList.toggle('hidden', calib.mode === 'search');
   }
   // Kalibrierung übernehmen (automatisch gefunden, gedreht oder von Hand gesetzt)
-  function applyCalib(pts, quiet) {
+  function applyCalib(pts, quiet, userOriented) {
     if (!D.solveH(pts, D.CAL_DST)) { if (!quiet) toast('Punkte ungültig – bitte neu setzen'); return false; }
+    detector.userOriented = !!userOriented;
     detector.setCalibration(pts);
     detector.tipBias = 0; detector.biasSamples = []; // neue Kameraposition: neu lernen
     const q = detector.refineCalibration(pts);
@@ -1060,48 +1140,127 @@
   $('#c-manual').onclick = startManual;
   $('#c-cancel').onclick = () => { stopCalibration(); setCamStatus('Bereit'); };
   $('#c-done').onclick = () => {
-    if (calib.mode === 'manual' && !applyCalib(calib.pts)) return;
+    if (calib.mode === 'manual' && !applyCalib(calib.pts, false, true)) return;
     stopCalibration();
     if (detector.H) showQuality(true);
   };
 
+  // ---------- Lagesensor: wo ist oben? (damit die 20 sicher oben liegt) ----------
+  // Das Rot/Grün-Muster der Scheibe wiederholt sich alle 36°. Der Lagesensor sagt, wo „oben“ ist – auch wenn das
+  // Handy schräg steht. Ohne Sensor gilt: oben im Bild.
+  const grav = { v: null, t: 0, on: false };
+  function onMotion(e) {
+    const a = e.accelerationIncludingGravity;
+    if (!a || a.x == null) return;
+    const now = Date.now();
+    if (now - grav.t < 90) return; // 10× pro Sekunde reicht
+    const k = grav.v ? 0.3 : 1;
+    grav.v = grav.v ? [grav.v[0] + (a.x - grav.v[0]) * k, grav.v[1] + (a.y - grav.v[1]) * k, grav.v[2] + (a.z - grav.v[2]) * k] : [a.x, a.y, a.z];
+    grav.t = now;
+  }
+  function enableMotion() {
+    if (grav.on || !window.DeviceMotionEvent) return;
+    grav.on = true;
+    window.addEventListener('devicemotion', onMotion);
+    // iPhone (und manche neuere Browser): Sensor nur nach Erlaubnis – die Abfrage muss in einem Tipp passieren
+    try {
+      if (typeof DeviceMotionEvent.requestPermission === 'function') DeviceMotionEvent.requestPermission().then((st) => { if (st !== 'granted') grav.on = false; }).catch(() => { grav.on = false; });
+    } catch (_) {}
+  }
+  window.addEventListener('pointerdown', () => { if (stream && !grav.on) enableMotion(); }, { capture: true, passive: true });
+  // „Oben“ in Kamera-Koordinaten (x rechts, y unten, z in Blickrichtung der Rückkamera)
+  function upCam() {
+    if (!grav.v || Date.now() - grav.t > 4000) return null;
+    const [ax, ay, az] = grav.v, n = Math.hypot(ax, ay, az);
+    if (n < 6 || n > 14) return null; // Handy wird gerade bewegt
+    const deg = (screen.orientation && typeof screen.orientation.angle === 'number') ? screen.orientation.angle : (window.orientation || 0);
+    const t = (deg * Math.PI) / 180;
+    const sx = ax * Math.cos(t) - ay * Math.sin(t), sy = ax * Math.sin(t) + ay * Math.cos(t);
+    return [sx / n, -sy / n, -az / n];
+  }
+
   // ---------- Automatische Scheibensuche (ohne Knopf) ----------
-  // Läuft, solange die Kamera an ist und (noch) keine Scheibe bekannt ist, die Scheibe verloren ging
-  // oder im Einrichten-Modus gesucht wird. Gefundene Scheibe wird sofort übernommen.
-  let searchNow = false, searchBusy = false;
+  // Läuft, solange die Kamera an ist und (noch) keine Scheibe bekannt ist, die Scheibe verloren ging,
+  // im Einrichten-Modus gesucht wird – und einmal bei jedem Kamerastart: Die gespeicherte Kalibrierung vom letzten Mal
+  // wird nicht blind übernommen (Handy steht oft etwas anders -> Raster rastet sonst eine Zahl daneben ein).
+  let searchNow = false, searchFresh = false, searchBusy = false, verifyOn = false, verifyTries = 0, lostTick = 0;
+  function startVerify() { verifyOn = true; verifyTries = 0; }
   setInterval(() => {
-    if (!stream || searchBusy || !detector.rgba || gestureView) return;
+    if (!stream || searchBusy || !detector.rgba) return;
     const inSetup = calib && calib.mode === 'search';
     if (calib && !inSetup) return; // Einrichten: Nutzer prüft gerade bzw. setzt Punkte von Hand
-    const lostLong = detector.H && detector.lost && lostSince && Date.now() - lostSince > 2500;
-    if (!(inSetup || !detector.H || lostLong || searchNow)) return;
+    const lostFor = detector.H && detector.lost && lostSince ? Date.now() - lostSince : 0;
+    // lange verloren und gezoomt: erst wieder das ganze Bild ansehen
+    if (lostFor > 9000 && zoom.z > 1.01) { applyZoom({ z: 1, cx: 0.5, cy: 0.5 }); lostSince = Date.now() - 2600; startVerify(); return; }
+    const lostLong = lostFor > 2500;
+    if (lostLong && !inSetup && !searchNow && !verifyOn && ++lostTick % 3) return; // verdeckt (z. B. beim Ziehen): seltener suchen
+    if (!(inSetup || !detector.H || lostLong || searchNow || verifyOn)) { maybeAutoZoom(false); return; }
     searchBusy = true;
     try {
       const r = detector.autoCalibrate();
       if (!r) {
+        if (verifyOn) {
+          verifyTries++;
+          if (verifyTries >= 3 && zoom.z > 1.01 && !detector.H) { applyZoom({ z: 1, cx: 0.5, cy: 0.5 }); verifyTries = 0; }
+          else if (verifyTries >= 6) verifyOn = false; // alte Kalibrierung behalten (wird laufend nachgeführt)
+        }
         if (inSetup) updateCalibHint();
         else if (!detector.H) setCamStatus('Suche die Scheibe … (ganze Scheibe ins Bild, Licht an)');
         return;
       }
-      // Ausrichtung der bisherigen Kalibrierung behalten (wo war die 20?)
-      const old = detector.calib;
-      let pts = r.pts;
-      if (old && !inSetup) pts = window.BoardFinder.reorient(pts, old[0]);
+      const prev = detector.calib;
+      // Bisherige Ausrichtung nur nutzen, wenn sie verlässlich ist: vom Nutzer angetippt oder gerade erst verloren
+      const usePrev = prev && !searchFresh && (detector.userOriented || lostLong);
+      const o = detector.orientPts(r.pts, { up: upCam(), prev: usePrev ? prev : null });
+      const pts = o.pts;
       const hadCalib = !!detector.H;
-      searchNow = false;
-      if (!applyCalib(pts, true)) return;
+      const checkOnly = verifyOn && hadCalib && !lostLong && !searchNow && !inSetup;
+      verifyOn = false; searchNow = false; searchFresh = false;
+      if (checkOnly) {
+        // passt die alte Kalibrierung (gleiche Lage, gleiche 20, gleich gut)? Dann bleibt sie – kein Springen
+        const moved = Math.max(...pts.map((p, i) => Math.hypot(p[0] - prev[i][0], p[1] - prev[i][1])));
+        if (moved < 0.012 && (detector.quality || 0) >= r.quality - 0.03) { maybeAutoZoom(true); return; }
+      }
+      if (!applyCalib(pts, true, o.how === 'vorher' && detector.userOriented)) return;
       if (inSetup) {
         calib.pts = detector.calib.slice(); calib.quality = detector.quality || r.quality; calib.mode = 'review';
         updateCalibHint();
         toast('Scheibe erkannt ✓ – steht die 20 oben?');
-        setTimeout(() => showQuality(false), 300);
-      } else {
-        toast(hadCalib ? 'Scheibe wiedergefunden ✓' : 'Scheibe erkannt ✓ – los geht’s!');
-        setTimeout(() => showQuality(false), 300);
-      }
+      } else if (!checkOnly || !hadCalib) toast(hadCalib && lostLong ? 'Scheibe wiedergefunden ✓' : 'Scheibe erkannt ✓ – los geht’s!');
+      setTimeout(() => showQuality(false), 300);
       setCamStatus('Bereit');
+      if (!inSetup) setTimeout(() => maybeAutoZoom(true), 200);
     } finally { searchBusy = false; }
   }, 600);
+
+  // ---------- Automatischer Zoom auf die Scheibe ----------
+  // Die Scheibe (mit Platz für herausragende Pfeile) soll das Bild füllen: genauer und weniger Rechenarbeit.
+  // Nie mitten in einer Aufnahme (Pfeile stecken) – nur wenn die Scheibe leer ist.
+  let zoomCheckAt = 0;
+  function boardBox(R) {
+    const v = detector.view, hz = detector.hz;
+    let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+    for (let a = 0; a < 360; a += 15) {
+      const [u, w] = D.applyH(detector.Hinv, ...B.polar(R, a));
+      const gx = 0.5 + (v.x + u * v.w - 0.5) / hz, gy = 0.5 + (v.y + w * v.h - 0.5) / hz;
+      x0 = Math.min(x0, gx); x1 = Math.max(x1, gx); y0 = Math.min(y0, gy); y1 = Math.max(y1, gy);
+    }
+    return { x0, x1, y0, y1 };
+  }
+  function maybeAutoZoom(force) {
+    if (!stream || !detector.Hinv || detector.lost || calib || settings.autoZoom === false) return;
+    if (!force && (Date.now() - zoomCheckAt < 5000 || mode === 'test')) return; // beim Einrichten zoomt man selbst
+    if (detector.turnDarts || detector.awaitClear || detector.phase === 'pull') return;
+    zoomCheckAt = Date.now();
+    const b = boardBox(232);
+    const target = clampZoom({ z: 0.96 / Math.max(b.x1 - b.x0, b.y1 - b.y0), cx: (b.x0 + b.x1) / 2, cy: (b.y0 + b.y1) / 2 });
+    const cur = viewFor(zoom, 1);
+    const cut = b.x0 < cur.x - 0.005 || b.y0 < cur.y - 0.005 || b.x1 > cur.x + cur.w + 0.005 || b.y1 > cur.y + cur.h + 0.005;
+    const gain = target.z / zoom.z;
+    const shift = Math.hypot(target.cx - zoom.cx, target.cy - zoom.cy) * zoom.z;
+    if (cut || gain > 1.2 || (force && (Math.abs(gain - 1) > 0.1 || shift > 0.08))) applyZoom(target);
+  }
+  window.DS.autoZoom = () => maybeAutoZoom(true);
 
   // Wie genau kann diese Kameraposition messen? Anzeige + konkreter Tipp
   function showQuality(withToast) {
@@ -1134,15 +1293,9 @@
     return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))];
   }
   canvas.addEventListener('pointerdown', (e) => {
+    if (!calib || calib.mode === 'search') return;
     e.preventDefault();
     const uv = toUV(e);
-    if (!calib || calib.mode === 'search') {
-      if (calib) return; // während der Suche nichts antippen
-      pointers.set(e.pointerId, uv);
-      canvas.setPointerCapture(e.pointerId);
-      gestureStart();
-      return;
-    }
     const r = canvas.getBoundingClientRect();
     calib.drag = -1;
     if (calib.mode === 'manual' && calib.pts.length < 4) {
@@ -1160,7 +1313,7 @@
         const turned = window.BoardFinder.reorient(calib.pts, uv);
         const ref = detector.refineCalibration(turned);
         calib.pts = ref && ref.quality > 0.1 ? ref.pts : turned;
-        applyCalib(calib.pts, true);
+        applyCalib(calib.pts, true, true);
         toast('Ausrichtung geändert – passt die 20 jetzt?');
         return;
       } else return;
@@ -1170,22 +1323,16 @@
     canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener('pointermove', (e) => {
-    if (pointers.has(e.pointerId)) { pointers.set(e.pointerId, toUV(e)); gestureMove(); return; }
     if (!calib || calib.drag < 0) return;
     const uv = toUV(e);
     calib.pts[calib.drag] = [calib.orig[0] + uv[0] - calib.start[0], calib.orig[1] + uv[1] - calib.start[1]];
   });
   const endDrag = (e) => {
-    if (pointers.has(e.pointerId)) {
-      pointers.delete(e.pointerId);
-      if (pointers.size === 0) gestureEnd(); else gestureStart();
-      return;
-    }
     if (calib && calib.drag >= 0) {
       const wasNew = calib.mode === 'manual' && calib.drag === 3 && calib.pts.length === 4 && !calib.snapped;
       calib.drag = -1;
       if (wasNew) { calib.snapped = true; snapManual(); }
-      if (calib.mode === 'review') applyCalib(calib.pts, true);
+      if (calib.mode === 'review') applyCalib(calib.pts, true, detector.userOriented);
       updateCalibHint();
     }
   };
@@ -1786,7 +1933,10 @@
     if (!wantFrames()) return;
     const w = 400, h = Math.round((w * canvas.height) / canvas.width);
     if (shot.width !== w || shot.height !== h) { shot.width = w; shot.height = h; }
-    shot.getContext('2d').drawImage(canvas, 0, 0, w, h);
+    // Kamerabild (gleicher Ausschnitt wie am Handy) + Raster/Treffer-Ebene darüber
+    const sc = shot.getContext('2d'), v = detector.view, vw = video.videoWidth, vh = video.videoHeight;
+    if (vw) sc.drawImage(video, v.x * vw, v.y * vh, v.w * vw, v.h * vh, 0, 0, w, h);
+    sc.drawImage(canvas, 0, 0, w, h);
     let img;
     try { img = shot.toDataURL('image/jpeg', 0.6); } catch (_) { return; }
     send({ t: 'frame', img, dart: pendingDart }, true);

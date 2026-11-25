@@ -56,6 +56,7 @@
     pushState(true);
   });
   net.on('links', (m) => { devices = m.devices || []; linkCountUpdate(); });
+  net.on('dispcmd', (m) => { if (role === 'main' && m.cmd && DS.displayCmd) DS.displayCmd(m.cmd); });
   net.on('linkgone', () => {
     if (role === 'main') { ctlToken = null; sessionStorage.removeItem('ds.ctlToken'); devices = []; linkCountUpdate(); }
   });
@@ -74,6 +75,18 @@
   // ---------- Spielstand an die Bildschirme ----------
   let sayQueue = [], sayId = 0;
   DS.hooks.speak.push((parts) => { if (DS.linkCount) { sayQueue.push({ id: ++sayId, parts: Array.isArray(parts) ? parts : [parts] }); pushState(true); } });
+  const dmap = (d) => ({ l: B.label(d), x: Number.isFinite(d.x) ? Math.round(d.x * 10) / 10 : null, y: Number.isFinite(d.y) ? Math.round(d.y * 10) / 10 : null, m: d.mult, v: !!d.void });
+  // letzte Aufnahmen aller Spieler, neueste zuerst (Spieler wechseln sich reihum ab)
+  function visits(g, meI) {
+    const n = g.players.length, out = [];
+    for (let k = 1; k <= 6; k++) {
+      const pi = (((g.current - k) % n) + n) % n;
+      const H = g.players[pi].history, h = H[H.length - 1 - Math.floor((k - 1) / n)];
+      if (!h) break;
+      out.push({ p: g.players[pi].name, darts: h.darts.map(dmap), scored: h.scored, bust: !!h.bust, mine: DS.mode === 'local' || pi === meI });
+    }
+    return out;
+  }
   function gameState() {
     const g = DS.game;
     if (!g) return null;
@@ -88,7 +101,8 @@
     const winner = g.finished ? g.players.find((p) => p.id === g.winner) : null;
     return {
       kind: 'game', mode: DS.mode, startScore: g.startScore, doubleOut: g.doubleOut, current: g.current, players,
-      turn: { darts: t.darts.map((d) => ({ l: B.label(d), x: Number.isFinite(d.x) ? Math.round(d.x * 10) / 10 : null, y: Number.isFinite(d.y) ? Math.round(d.y * 10) / 10 : null, m: d.mult, v: !!d.void })), total, bust: !!t.bust, won: !!t.won, done: Game.turnComplete(g) },
+      turn: { darts: t.darts.map(dmap), total, bust: !!t.bust, won: !!t.won, done: Game.turnComplete(g) },
+      hist: visits(g, meI), edit: !!(DS.canEdit && DS.canEdit()),
       checkout: co, winner: winner ? winner.name : null, room: DS.room ? DS.room.code : null,
     };
   }
@@ -190,6 +204,12 @@
       disp.el.className = 'display';
       document.body.appendChild(disp.el);
       disp.el.addEventListener('click', (e) => {
+        const pk = e.target.closest('[data-pick]');
+        if (pk) { onPick(pk.dataset.pick); return; }
+        const dt = e.target.closest('[data-edit]');
+        if (dt) { openPicker(dt.dataset.edit); return; }
+        const ac = e.target.closest('[data-act]');
+        if (ac) { net.send({ t: 'dispcmd', cmd: { kind: ac.dataset.act } }); window.Sound && window.Sound.tap(); return; }
         if (e.target.closest('#dp-sound')) {
           disp.sound = !disp.sound;
           if (disp.sound) window.Speech.enable(); else window.Speech.disable();
@@ -210,6 +230,49 @@
     renderDisplay();
     requestWake();
   }
+  // ---------- Korrigieren am Bildschirm ----------
+  // edit: 'cur:0' (Pfeil 1 der aktuellen Aufnahme), 'last:2' (Pfeil 3 der letzten Aufnahme), 'add' (Pfeil eintragen)
+  let picker = null;
+  function openPicker(edit) {
+    const s = disp.state;
+    if (!s || s.kind !== 'game') return;
+    const [which, i] = edit.split(':');
+    let title = 'Pfeil eintragen', cur = null;
+    if (which === 'cur') { cur = s.turn.darts[+i]; title = `Pfeil ${+i + 1} korrigieren`; }
+    else if (which === 'last') { cur = s.hist[0] && s.hist[0].darts[+i]; title = `${s.hist[0] ? s.hist[0].p + ': ' : ''}Pfeil ${+i + 1} korrigieren`; }
+    picker = { which, index: i == null ? null : +i, mult: 1 };
+    const div = document.createElement('div');
+    div.className = 'dp-picker';
+    div.id = 'dp-picker';
+    div.innerHTML = `<div class="dp-pk-box"><h2>${esc(title)}${cur ? ` <span class="muted">(jetzt ${esc(cur.l)})</span>` : ''}</h2>
+      <div class="dp-pk-mult">${[[1, 'Single'], [2, 'Double'], [3, 'Triple']].map(([m, n]) => `<button data-pick="m${m}" class="${m === 1 ? 'on' : ''}">${n}</button>`).join('')}</div>
+      <div class="dp-pk-grid">${Array.from({ length: 20 }, (_, k) => `<button data-pick="n${k + 1}">${k + 1}</button>`).join('')}</div>
+      <div class="dp-pk-row"><button data-pick="s25">25</button><button data-pick="sbull">Bull</button><button data-pick="smiss">Miss</button>
+        ${which === 'cur' ? '<button data-pick="del" class="warn">Löschen</button>' : ''}<button data-pick="x" class="ghost">Abbrechen</button></div></div>`;
+    closePicker();
+    disp.el.appendChild(div);
+  }
+  function closePicker() { const p = document.getElementById('dp-picker'); if (p) p.remove(); }
+  function onPick(v) {
+    if (!picker) return closePicker();
+    if (v === 'x') { picker = null; return closePicker(); }
+    if (v[0] === 'm') {
+      picker.mult = +v.slice(1);
+      document.querySelectorAll('#dp-picker .dp-pk-mult button').forEach((b) => b.classList.toggle('on', b.dataset.pick === v));
+      return;
+    }
+    let cmd;
+    if (v === 'del') cmd = { kind: 'remove', index: picker.index };
+    else {
+      const dart = v === 's25' ? { seg: 25, mult: 1 } : v === 'sbull' ? { seg: 25, mult: 2 } : v === 'smiss' ? { seg: 0, mult: 0 } : { seg: +v.slice(1), mult: picker.mult };
+      cmd = picker.which === 'add' ? { kind: 'add', dart } : { kind: 'correct', which: picker.which, index: picker.index, dart };
+    }
+    net.send({ t: 'dispcmd', cmd });
+    window.Sound && window.Sound.tap();
+    picker = null; closePicker();
+  }
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && picker) { picker = null; closePicker(); } });
+
   async function requestWake() { try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (_) {} }
   document.addEventListener('visibilitychange', () => { if (role === 'display' && document.visibilityState === 'visible') requestWake(); });
   function renderDisplayCode(code) {
@@ -236,6 +299,15 @@
   function boardSvg(darts) {
     const hits = (darts || []).filter((d) => d.x != null).map((d, i) => `<g transform="translate(${d.x} ${d.y})"><circle r="11" fill="#ece0bf" stroke="#131518" stroke-width="3"/><text y="1" font-size="14" font-weight="800" text-anchor="middle" dominant-baseline="central" fill="#131518">${i + 1}</text></g>`).join('');
     return B.svg(hits);
+  }
+  // Letzte Aufnahmen: neueste oben; die allerletzte ist korrigierbar, solange die neue Aufnahme noch leer ist
+  function histHtml(s) {
+    if (!s.hist || !s.hist.length) return '';
+    const canLast = s.turn.darts.length === 0 && s.hist[0].mine && !s.winner;
+    return `<div class="dp-hist"><div class="dp-hist-t">Letzte Aufnahmen${canLast ? ' <span class="muted">– Pfeil antippen zum Korrigieren</span>' : ''}</div>
+      ${s.hist.slice(0, 5).map((h, k) => `<div class="dp-h ${k === 0 ? 'new' : ''}"><span class="dp-hn">${esc(h.p)}</span>
+        <span class="dp-hd">${[0, 1, 2].map((i) => { const d = h.darts[i]; const ed = d && k === 0 && canLast ? ` data-edit="last:${i}"` : ''; return `<span class="dp-hc ${d && d.m === 3 ? 't' : d && d.m === 2 ? 'd' : ''} ${ed ? 'ed' : ''}"${ed}>${d ? esc(d.l) : '–'}</span>`; }).join('')}</span>
+        <span class="dp-hs ${h.scored === 180 ? 'max' : ''}">${h.bust ? 'Bust' : h.scored}</span></div>`).join('')}</div>`;
   }
   function renderDisplay() {
     if (!disp.el) return;
@@ -270,14 +342,18 @@
           <div class="dp-pn">${esc(p.name)}${p.legs ? ` <span class="dp-legs">${p.legs} Leg${p.legs > 1 ? 's' : ''}</span>` : ''}</div>
           <div class="dp-ps">${p.score}</div><div class="dp-pm">Ø ${String(p.avg).replace('.', ',')} · ${p.darts} Pfeile</div></div>`).join('')}</div>
         <div class="dp-turn"><div class="dp-tn">${s.winner ? esc(s.winner) + ' gewinnt!' : esc(cur.name) + ' wirft'}</div>
-          <div class="dp-darts">${[0, 1, 2].map((i) => { const d = s.turn.darts[i]; return `<div class="dp-dart ${d ? 'f' : ''} ${d && d.m === 3 ? 't' : d && d.m === 2 ? 'd' : ''}">${d ? esc(d.l) : '–'}</div>`; }).join('')}
+          <div class="dp-darts">${[0, 1, 2].map((i) => { const d = s.turn.darts[i]; const ed = d && s.edit ? ` data-edit="cur:${i}" title="Antippen zum Korrigieren"` : ''; return `<div class="dp-dart ${d ? 'f' : ''} ${d && d.m === 3 ? 't' : d && d.m === 2 ? 'd' : ''} ${ed ? 'ed' : ''}"${ed}>${d ? esc(d.l) : '–'}</div>`; }).join('')}
             <div class="dp-total ${s.turn.total === 180 ? 'max' : ''}">${s.turn.bust ? 'Bust' : s.turn.total || ''}</div></div>
-          <div class="dp-co">${s.checkout ? 'Finish: ' + s.checkout.map((c) => `<b>${esc(c)}</b>`).join(' ') : s.turn.done && !s.winner ? 'Pfeile ziehen …' : ''}</div></div>
+          <div class="dp-co">${s.checkout ? 'Finish: ' + s.checkout.map((c) => `<b>${esc(c)}</b>`).join(' ') : s.turn.done && !s.winner ? 'Pfeile ziehen …' : ''}</div>
+          ${s.edit && !s.winner ? `<div class="dp-acts">${s.turn.darts.length < 3 && !s.turn.done ? '<button data-edit="add" class="dp-btn">+ Pfeil eintragen</button>' : ''}<button data-act="undo" class="dp-btn">↶ Zurück</button><button data-act="next" class="dp-btn on">Weiter →</button></div>` : ''}</div>
+        ${histHtml(s)}
       </div>
-      <div class="dp-side"><img id="dp-img" class="dp-cam" alt="Kamerabild"/><div class="dp-board">${boardSvg(s.turn.darts)}</div>
+      <div class="dp-side"><img id="dp-img" class="dp-cam" alt="Kamerabild"/><div class="dp-board ${s.turn.darts.length ? '' : 'old'}">${boardSvg(s.turn.darts.length ? s.turn.darts : (s.hist && s.hist[0] ? s.hist[0].darts : []))}</div>
         <div class="dp-mode">${s.startScore} · ${s.doubleOut ? 'Double-Out' : 'Single-Out'}${s.room ? ' · Online ' + esc(s.room) : ''}</div></div></div>`;
     }
+    const pk = document.getElementById('dp-picker');
     disp.el.innerHTML = top + body;
+    if (pk && picker) disp.el.appendChild(pk); // Auswahl bleibt offen, auch wenn ein neuer Spielstand kommt
     const im = document.getElementById('dp-img');
     if (im) { if (disp.img) im.src = disp.img; else im.classList.add('empty'); }
   }

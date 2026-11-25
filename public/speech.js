@@ -62,7 +62,8 @@
   ['pointerdown', 'keydown', 'touchstart'].forEach((ev) => window.addEventListener(ev, unlock, { capture: true, passive: true }));
 
   // ---------- Warteschlange ----------
-  function done() { busy = false; lastEnd = Date.now(); setTimeout(next, 60); }
+  let ttsEnd = 0;
+  function done() { busy = false; lastEnd = Date.now(); ttsEnd = Date.now(); setTimeout(next, 60); }
 
   async function playCloud(text) {
     let url = cache.get(text);
@@ -178,10 +179,66 @@
     }
     lastEnd = Date.now() + 400; // eigene Töne nicht als Sprache werten
   }
+  // ---------- Spiel-Sounds (selbst erzeugt, keine Dateien) ----------
+  let sfxOn = LSget('ds.sfx', true);
+  let noiseBuf = null;
+  function noise(c) {
+    if (noiseBuf) return noiseBuf;
+    noiseBuf = c.createBuffer(1, c.sampleRate * 0.6, c.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    return noiseBuf;
+  }
+  // kurzer Rausch-Impuls durch einen Filter (Einschlag, Wusch)
+  function burst(c, t, { dur = 0.12, freq = 2500, q = 1, type = 'bandpass', vol = 0.3, sweep = 0 } = {}) {
+    const src = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();
+    src.buffer = noise(c); f.type = type; f.frequency.setValueAtTime(freq, t); f.Q.value = q;
+    if (sweep) f.frequency.exponentialRampToValueAtTime(sweep, t + dur);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + 0.006); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(f).connect(g).connect(c.destination); src.start(t); src.stop(t + dur + 0.05);
+  }
+  function thump(c, t, { f0 = 180, f1 = 60, dur = 0.16, vol = 0.45, type = 'sine' } = {}) {
+    const o = c.createOscillator(), g = c.createGain();
+    o.type = type; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + 0.005); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(c.destination); o.start(t); o.stop(t + dur + 0.05);
+  }
+  function note(c, t, f, dur, vol = 0.16, type = 'triangle') {
+    const o = c.createOscillator(), g = c.createGain();
+    o.type = type; o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(c.destination); o.start(t); o.stop(t + dur + 0.05);
+  }
+  function sfx(fn) {
+    if (!sfxOn) return;
+    const c = ctx();
+    if (!c || c.state !== 'running') return;
+    try { fn(c, c.currentTime + 0.01); } catch (_) {}
+  }
   const Sound = {
     wake: () => tones([[660, 0, 0.16], [990, 0.11, 0.24]]),        // "ich höre"
     ok: () => tones([[880, 0, 0.12], [1320, 0.09, 0.2]], 0.18),     // erledigt
     err: () => tones([[440, 0, 0.18], [330, 0.15, 0.28]], 0.2),     // nicht verstanden
+    // Pfeil steckt: dumpfer Einschlag (Triple/Double etwas heller, Miss leise)
+    hit: (mult = 1) => sfx((c, t) => {
+      if (!mult) { burst(c, t, { dur: 0.09, freq: 900, vol: 0.08 }); return; }
+      thump(c, t, { f0: 210, f1: 70, dur: 0.14, vol: 0.5 });
+      burst(c, t, { dur: 0.05, freq: 3200, q: 0.8, vol: 0.22 });
+      if (mult > 1) note(c, t + 0.05, mult === 3 ? 1568 : 1319, 0.22, 0.09, 'sine');
+    }),
+    // 180: kleine Fanfare
+    max: () => sfx((c, t) => { [523, 659, 784, 1047].forEach((f, i) => note(c, t + i * 0.09, f, 0.32 + (i === 3 ? 0.4 : 0), 0.15)); burst(c, t + 0.27, { dur: 0.6, freq: 6000, type: 'highpass', vol: 0.07 }); }),
+    // Aufnahme mit 100+ (Ton steigt mit)
+    good: (v = 100) => sfx((c, t) => { const f = 523 + Math.min(1, (v - 100) / 80) * 260; note(c, t, f, 0.16, 0.12); note(c, t + 0.1, f * 1.5, 0.26, 0.12); }),
+    bust: () => sfx((c, t) => { note(c, t, 311, 0.22, 0.16, 'sawtooth'); note(c, t + 0.18, 233, 0.4, 0.14, 'sawtooth'); }),
+    // Spiel gewonnen
+    win: () => sfx((c, t) => { [523, 659, 784, 659, 784, 1047].forEach((f, i) => note(c, t + i * 0.12, f, i === 5 ? 0.9 : 0.2, 0.15)); burst(c, t + 0.6, { dur: 0.9, freq: 7000, type: 'highpass', vol: 0.08 }); }),
+    // nächster Spieler / weiter
+    turn: () => sfx((c, t) => burst(c, t, { dur: 0.22, freq: 600, sweep: 2400, q: 0.7, vol: 0.12 })),
+    // Knopf gedrückt (leise)
+    tap: () => sfx((c, t) => burst(c, t, { dur: 0.03, freq: 2200, q: 2, vol: 0.06 })),
+    get on() { return sfxOn; },
+    set on(v) { sfxOn = !!v; LSset('ds.sfx', sfxOn); },
   };
   window.Sound = Sound;
 
@@ -213,6 +270,7 @@
   window.Speech = {
     say, enable, disable,
     get speaking() { return busy || Date.now() - lastEnd < 500; },
+    get talking() { return busy || Date.now() - ttsEnd < 350; }, // nur die Sprachausgabe selbst (ohne Signaltöne)
     get enabled() { return state.enabled; },
     set enabled(v) { if (v) enable(); else disable(); },
     get voice() { return state.voice; },

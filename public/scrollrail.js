@@ -1,12 +1,11 @@
-// Scroll-Streifen am rechten Rand: Hier wischt man ganz normal hoch und runter (wie überall auf der Seite),
-// ohne das Kamerabild zu berühren – beim Kalibrieren oder im gezoomten Bild würde ein Wisch dort sonst etwas verschieben.
-// Bewusst einfach: kein eigenes Scrollen per Skript, der Browser scrollt selbst (mit Schwung, flüssig).
+// Ganz einfache Scrollleiste am rechten Rand: schmale Linie, die zeigt, wo man auf der Seite ist.
+// Wischen darüber scrollt ganz normal (der Browser scrollt selbst), mit der Maus kann man sie ziehen.
 (() => {
   'use strict';
   const strip = document.createElement('div');
   strip.className = 'sstrip hidden';
   strip.setAttribute('aria-hidden', 'true');
-  strip.innerHTML = '<div class="sstrip-line"><div class="sstrip-thumb"></div></div><div class="sstrip-grip"><span></span><span></span><span></span></div>';
+  strip.innerHTML = '<div class="sstrip-line"><div class="sstrip-thumb"></div></div>';
   document.body.appendChild(strip);
   const line = strip.querySelector('.sstrip-line');
   const thumb = strip.querySelector('.sstrip-thumb');
@@ -23,7 +22,7 @@
     document.body.classList.toggle('rail-on', show);
     if (!show) return;
     const th = line.clientHeight;
-    const h = Math.max(36, th * Math.min(1, window.innerHeight / doc.scrollHeight));
+    const h = Math.max(28, th * Math.min(1, window.innerHeight / doc.scrollHeight));
     thumb.style.height = h + 'px';
     thumb.style.transform = `translateY(${(th - h) * (maxScroll() ? window.scrollY / maxScroll() : 0)}px)`;
   }

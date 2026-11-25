@@ -282,7 +282,11 @@ input[type=range] { -webkit-appearance: none; appearance: none; padding: 0; heig
 input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 22px; height: 22px; border-radius: 50%; background: var(--sisal); border: 4px solid var(--red); }
 input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: var(--sisal); border: 4px solid var(--red); }
 .z-val { grid-column: 1 / -1; font-size: 0.8rem; color: var(--dim); text-align: center; margin-top: -2px; }
+/* Kamerabild: das Video wird direkt angezeigt (Zoom-Ausschnitt per CSS), darüber eine durchsichtige Zeichenebene */
 #video { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; left: 0; top: 0; }
+.cam-wrap #video { position: absolute; left: 0; top: 0; width: 100%; height: auto; opacity: 1; max-width: none; transform-origin: 0 0; object-fit: fill; z-index: 0; }
+.cam-wrap #cam-canvas { position: relative; z-index: 1; background: transparent; }
+.cam-wrap .cam-off, .cam-wrap .cam-hint { z-index: 2; }
 .mini-board { max-width: 300px; margin: 6px auto 0; width: 100%; }
 .board-svg { width: 100%; height: auto; display: block; }
 
@@ -427,12 +431,10 @@ body.in-game .toast { bottom: calc(20px + env(safe-area-inset-bottom)); }
 }
 
 /* Scroll-Leiste rechts (scrollen ohne das Kamerabild zu berühren) */
-.sstrip { position: fixed; right: 0; top: 0; bottom: 0; width: 46px; z-index: 60; touch-action: pan-y; display: flex; align-items: center; justify-content: center; background: linear-gradient(90deg, rgba(19, 21, 24, 0), rgba(19, 21, 24, 0.72) 40%); border-left: 1px solid rgba(236, 224, 191, 0.08); cursor: ns-resize; }
+.sstrip { position: fixed; right: 0; top: 0; bottom: 0; width: 22px; z-index: 60; touch-action: pan-y; cursor: ns-resize; }
 .sstrip.hidden { display: none; }
-.sstrip-line { position: absolute; top: 14px; bottom: calc(14px + env(safe-area-inset-bottom)); left: 50%; width: 6px; margin-left: -3px; border-radius: 3px; background: rgba(236, 224, 191, 0.12); pointer-events: none; }
-.sstrip-thumb { position: absolute; left: 0; right: 0; top: 0; border-radius: 3px; background: var(--brass); opacity: 0.85; }
-.sstrip-grip { display: flex; flex-direction: column; gap: 4px; padding: 10px 8px; border-radius: 14px; background: rgba(19, 21, 24, 0.85); border: 1px solid var(--line); pointer-events: none; }
-.sstrip-grip span { width: 16px; height: 2px; border-radius: 1px; background: var(--dim); }
+.sstrip-line { position: absolute; top: 10px; bottom: calc(10px + env(safe-area-inset-bottom)); right: 5px; width: 5px; border-radius: 3px; background: rgba(236, 224, 191, 0.1); pointer-events: none; }
+.sstrip-thumb { position: absolute; left: 0; right: 0; top: 0; border-radius: 3px; background: rgba(236, 224, 191, 0.55); }
 #cam-canvas { touch-action: pan-y; }
 #cam-canvas.capture { touch-action: none; }
 
@@ -525,7 +527,7 @@ body.in-game .toast { bottom: calc(20px + env(safe-area-inset-bottom)); }
 .b-walk { display: flex; gap: 4px; padding: 6px; border-top: 1px dashed var(--line); }
 .b-walk button { flex: 1; font-size: 0.72rem; padding: 4px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface-2); color: var(--dim); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #b-tree { margin-left: 8px; }
-body.rail-on main { padding-right: 52px; }
+body.rail-on main { padding-right: 24px; }
 #calib-tools { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 #calib-tools .btn { min-width: 0; padding-left: 4px; padding-right: 4px; }
 #b-tree:not(.hidden) ~ .game-mode { display: none; }
@@ -680,3 +682,30 @@ body.display-mode .topbar, body.display-mode .tabbar, body.display-mode main, bo
 
 /* schmale Handys: mit Raum-/Turnier-Code in der Kopfzeile den Schriftzug ausblenden, damit das Profil sichtbar bleibt */
 @media (max-width: 440px) { body.has-badge .brand span { display: none; } }
+
+/* Bildschirm: Würfe korrigieren, letzte Aufnahmen */
+.dp-dart.ed, .dp-hc.ed { cursor: pointer; outline: 2px dashed rgba(236, 224, 191, 0.25); outline-offset: 3px; }
+.dp-dart.ed:hover, .dp-hc.ed:hover { outline-color: var(--brass); }
+.dp-acts { display: flex; gap: 10px; margin-top: 1.2vh; flex-wrap: wrap; }
+.dp-acts .dp-btn { font-size: clamp(0.9rem, 1.2vw, 1.2rem); padding: 8px 18px; }
+.dp-hist { margin-top: 1.5vh; display: flex; flex-direction: column; gap: 6px; min-height: 0; overflow: hidden; }
+.dp-hist-t { color: var(--dim); font-weight: 700; font-size: clamp(0.85rem, 1.1vw, 1.1rem); }
+.dp-h { display: grid; grid-template-columns: minmax(80px, 1fr) auto 70px; gap: 12px; align-items: center; padding: 6px 12px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); font-size: clamp(0.95rem, 1.4vw, 1.5rem); opacity: 0.75; }
+.dp-h.new { opacity: 1; border-color: rgba(216, 176, 74, 0.45); }
+.dp-hn { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dp-hd { display: flex; gap: 8px; }
+.dp-hc { min-width: 3.2em; text-align: center; font-family: var(--display); font-weight: 800; padding: 2px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.05); }
+.dp-hc.t { color: #ff6a5f; } .dp-hc.d { color: #2fd087; }
+.dp-hs { font-family: var(--display); font-weight: 900; text-align: right; }
+.dp-hs.max { color: var(--red); }
+.dp-board.old { opacity: 0.55; }
+.dp-picker { position: fixed; inset: 0; z-index: 250; background: rgba(0, 0, 0, 0.6); display: grid; place-items: center; }
+.dp-pk-box { background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 22px; width: min(720px, 92vw); display: flex; flex-direction: column; gap: 14px; }
+.dp-pk-box h2 { margin: 0; font-family: var(--display); font-size: 1.8rem; }
+.dp-pk-mult, .dp-pk-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.dp-pk-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.dp-picker button { font: inherit; font-weight: 800; font-size: 1.3rem; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--sisal); cursor: pointer; flex: 1; }
+.dp-picker button:hover { border-color: var(--brass); }
+.dp-picker button.on { background: var(--brass); color: var(--bg); }
+.dp-picker button.warn { color: #ff6a5f; }
+.dp-picker button.ghost { color: var(--dim); }

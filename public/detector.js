@@ -217,6 +217,7 @@
       this.view = { x: 0, y: 0, w: 1, h: 1 }; // Bildausschnitt (digitaler Zoom), normiert aufs Kamerabild
       this.hz = 1;                             // Hardware-Zoom der Kamera
       this.lastDebug = null;
+      this.lightGrab = typeof document !== 'undefined'; // kleines Bild für die Bewegungserkennung (nur im Browser)
       if (typeof document !== 'undefined') {
         this.canvas = document.createElement('canvas');
         this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
@@ -310,7 +311,8 @@
       const loop = () => {
         if (!this.running) return;
         try { this.tick(); } catch (e) { console.error(e); }
-        this.timer = setTimeout(loop, 90);
+        // Pause (Gegner dran, kein Spiel): seltener schauen spart Akku; beim Werfen/Ziehen volles Tempo
+        this.timer = setTimeout(loop, this.phase === 'idle' && this.H && !this.lost ? 220 : 90);
       };
       loop();
     }
@@ -399,6 +401,25 @@
       ctx.drawImage(v, c.x * vw, c.y * vh, c.w * vw, c.h * vh, 0, 0, w, h);
       this.rgba = ctx.getImageData(0, 0, w, h).data;
       this.grayStale = true; // Graubild wird nur bei Bedarf (ruhiges Bild) berechnet
+      this.smFresh = false;
+    }
+
+    // Nur ein kleines Helligkeitsbild (halbe Breite/Höhe) für die Bewegungserkennung: das Verkleinern macht die
+    // Grafikkarte, ausgelesen wird nur ein Viertel der Pixel. Das große Bild holen wir erst, wenn es ruhig ist.
+    grabSmall() {
+      const w2 = this.w >> 1, h2 = this.h >> 1, v = this.video, c = this.view;
+      if (!this.smCanvas) {
+        this.smCanvas = document.createElement('canvas');
+        this.smCtx = this.smCanvas.getContext('2d', { willReadFrequently: true });
+      }
+      if (this.smCanvas.width !== w2 || this.smCanvas.height !== h2) { this.smCanvas.width = w2; this.smCanvas.height = h2; }
+      const vw = v.videoWidth, vh = v.videoHeight;
+      this.smCtx.drawImage(v, c.x * vw, c.y * vh, c.w * vw, c.h * vh, 0, 0, w2, h2);
+      const d = this.smCtx.getImageData(0, 0, w2, h2).data;
+      if (!this.sm || this.sm.length !== w2 * h2) { this.sm = new Uint8Array(w2 * h2); this.prevSm = null; }
+      const sm = this.sm;
+      for (let i = 0, j = 0; i < sm.length; i++, j += 4) sm[i] = (d[j] * 77 + d[j + 1] * 150 + d[j + 2] * 29) >> 8;
+      this.smFresh = true;
     }
 
     ensureGray() { if (this.grayStale && this.rgba) this.toGray(this.rgba); }
@@ -653,7 +674,37 @@
     // Neue Aufnahme beginnen (Scheibe leer)
     // Wird "Weiter" gedrückt, bevor die Pfeile gezogen sind, stecken sie noch in der Scheibe. Dann bleibt das
     // letzte Bild der LEEREN Scheibe gültig und die Erkennung wartet (ohne neue Würfe zu verpassen) aufs Ziehen.
+    // Aktuelles großes Bild holen (bei der sparsamen Bewegungserkennung kann das letzte schon etwas älter sein)
+    freshFrame() {
+      if (this.lightGrab && this.video && this.video.videoWidth && this.w && this.ctx) { try { this.grab(); } catch (_) {} }
+    }
+
+    // Stellen der Pfeile einer Aufnahme (mm-Punkte) sehen wieder wie die leere Scheibe aus?
+    spotsEmpty(points) {
+      if (!points || !points.length || !this.emptyRef || !this.Hinv || !this.mask) return false;
+      const ex = this.exclude; this.exclude = null;
+      const e = this.diff(this.cur, this.emptyRef, true);
+      this.exclude = ex;
+      const { w, h } = this;
+      let checked = 0;
+      for (const pts of points) {
+        let n = 0, empty = 0;
+        for (const [bx, by] of pts) {
+          const [u, v] = applyH(this.Hinv, bx, by);
+          const x = Math.round(u * w - 0.5), y = Math.round(v * h - 0.5);
+          if (x < 0 || y < 0 || x >= w || y >= h || !this.mask[y * w + x]) continue;
+          n++;
+          if (!e.bin[y * w + x]) empty++;
+        }
+        if (n < 8) continue;
+        checked++;
+        if (empty / n < 0.65) return false;
+      }
+      return checked > 0;
+    }
+
     startTurn() {
+      this.freshFrame();
       const prevPts = this.turnPts || [];
       this.turnDarts = 0;
       this.turnBlobs = [];
@@ -663,7 +714,10 @@
       this.phase = 'throw';
       if (!this.cur || !this.mask || !this.H) { this.ref = this.snapRef(); this.emptyRef = this.ref; this.awaitClear = false; return; }
       this.ensureGray();
-      const dirty = this.emptyRef && this.diff(this.cur, this.emptyRef, false).count > this.minPx() * 3;
+      let dirty = this.emptyRef && this.diff(this.cur, this.emptyRef, false).count > this.minPx() * 3;
+      // „Weiter“ von Hand nach dem Ziehen: Das Leer-Bild ist evtl. veraltet (Licht, Spuren), die Pfeile sind aber weg.
+      // Dann NICHT auf ein Ziehen warten, das nie kommt – sonst klappt Auto-Weiter erst Runden später wieder.
+      if (dirty && this.spotsEmpty(prevPts.concat(this.awaitClear ? this.oldPts || [] : []))) dirty = false;
       this.ref = this.snapRef();
       if (dirty) { this.awaitClear = true; this.oldPts = (this.oldPts || []).concat(prevPts); this.status('Pfeile ziehen …'); }
       else { this.emptyRef = this.ref; this.awaitClear = false; this.oldPts = null; }
@@ -671,6 +725,7 @@
 
     // Aktuellen Zustand als Referenz übernehmen (z. B. nach manueller Eingabe)
     rebaseline() {
+      this.freshFrame(); this.ensureGray();
       this.turnDarts = (this.turnDarts || 0) + 1; // manuell eingetragener Pfeil steckt evtl. in der Scheibe
       this.ref = this.snapRef();
       this.evaluated = true;
@@ -678,6 +733,7 @@
 
     // ---------- Scheibe finden / nachführen ----------
     autoCalibrate() {
+      this.freshFrame();
       if (!this.rgba || !this.w) return null;
       const r = F.autoFind(this.rgba, this.w, this.h);
       if (!r || r.quality < MIN_QUALITY) return null;
@@ -689,6 +745,18 @@
       const maps = F.colorMaps(this.rgba, this.w, this.h);
       const r = F.refine(maps, ptsNorm.map(([u, v]) => [u * this.w, v * this.h]), { search: 8 });
       return { pts: r.pts.map(([x, y]) => [x / this.w, y / this.h]), quality: r.quality };
+    }
+
+    // Die 20 richtig setzen (siehe BoardFinder.chooseRotation). ptsNorm/prevNorm: normierte Bildpunkte (0..1)
+    orientPts(ptsNorm, opts = {}) {
+      const { w, h } = this, vw = this.view;
+      if (!w) return { pts: ptsNorm, how: 'none' };
+      const px = ptsNorm.map(([u, v]) => [u * w, v * h]);
+      const pp = [((0.5 - vw.x) / vw.w) * w, ((0.5 - vw.y) / vw.h) * h];
+      const fGuess = (0.72 * this.hz * w) / vw.w;
+      const prevDir = opts.prev ? F.dirOf20(opts.prev.map(([u, v]) => [u * w, v * h])) : null;
+      const r = F.chooseRotation(px, w, h, { up: opts.up || null, prevDir, pp, fGuess });
+      return { pts: r.pts.map(([x, y]) => [x / w, y / h]), how: r.how };
     }
 
     // Prüft die Lage der Scheibe und passt die Kalibrierung an, wenn die Kamera verrutscht ist
@@ -799,10 +867,10 @@
     tick() {
       if (!this.ensureSize()) return;
       const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
-      this.grab();
-      if (!this.H) return;
+      if (!this.H) { if ((this.noCalN = (this.noCalN || 0) + 1) % 3 === 1) this.grab(); return; } // nur für die Scheibensuche
       if (!this.mask) this.buildMask();
-      this.makeSmall();
+      const light = this.lightGrab && this.prevSm && this.rgba;
+      if (light) this.grabSmall(); else { this.grab(); this.makeSmall(); }
       if (!this.prevSm) {
         this.prevSm = this.sm.slice();
         this.ensureGray();
@@ -830,16 +898,24 @@
       }
       this.stable++;
       // Graubild + Mittelung nur, wenn bald ausgewertet wird (spart Rechenzeit)
-      const phase8 = this.stable % 8;
-      if (!this.evaluated || phase8 >= 5 || phase8 === 0) {
-        if (this.evaluated && phase8 === 5) this.avgN = 0;
+      // Sicherheitsprüfung (Pfeil ohne erkannte Bewegung?): anfangs alle 8, bei lange ruhiger Scheibe alle 16 Bilder.
+      // Ein normaler Wurf löst ohnehin Bewegung aus und wird sofort ausgewertet.
+      const P = this.evaluated && this.stable > 40 && this.lightGrab ? 16 : 8;
+      const phase8 = this.stable % P;
+      const trackEvery = this.phase === 'idle' ? this.trackEvery * 2 : this.trackEvery;
+      const needFull = !this.evaluated || phase8 >= P - 3 || phase8 === 0 || this.stable < 4 ||
+        (this.lost && this.stable % 10 === 0) || (this.autoTrack && this.stable % trackEvery === 0);
+      if (light && needFull) this.grab(); // jetzt ist es ruhig: das große Bild holen
+      if (!needFull) { this.perf(t0); return; }
+      if (!this.evaluated || phase8 >= P - 3 || phase8 === 0) {
+        if (this.evaluated && phase8 === P - 3) this.avgN = 0;
         this.ensureGray();
         this.accumulate();
       }
       if (this.stable < 4) { this.perf(t0); return; }
       if (!this.evaluated) { this.evaluated = true; this.useAverage(); this.evaluate(); this.perf(t0); return; }
       if (this.lost && this.stable % 10 === 0) { this.realign(60); return; }
-      if (this.autoTrack && this.stable % this.trackEvery === 0) { this.realign(12, true); return; }
+      if (this.autoTrack && this.stable % trackEvery === 0) { this.realign(12, true); return; }
       // zur Sicherheit regelmäßig nachsehen, falls ein Pfeil ohne erkannte Bewegung dazugekommen ist
       if (phase8 === 0) { this.useAverage(); this.evaluate(); }
       this.perf(t0);

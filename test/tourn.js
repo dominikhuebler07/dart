@@ -157,6 +157,17 @@ const sock = (n, uid) => ({ n, readyState: 1, meta: {}, msgs: [], user: { uid: u
   assert(cam.last('cam2ctl').phase === 'throw' && !tv.last('cam2ctl'), 'Steuerung nur an die 2. Kamera');
   L.handle(cam, { t: 'cam2dart', dart: { x: 1, y: -100 }, key: 'k1' });
   assert(phone.last('cam2dart').dart.y === -100, 'Treffer der 2. Kamera kommt an');
+  // Laptop korrigiert einen Wurf -> geht ans Handy, nur gültige Pfeile, die 2. Kamera darf das nicht
+  L.handle(tv, { t: 'dispcmd', cmd: { kind: 'correct', which: 'cur', index: 1, dart: { seg: 20, mult: 3 } } });
+  const dc = phone.last('dispcmd');
+  assert(dc && dc.cmd.kind === 'correct' && dc.cmd.index === 1 && dc.cmd.dart.seg === 20 && dc.cmd.dart.mult === 3, 'Korrektur vom Bildschirm kommt am Handy an');
+  phone.msgs = phone.msgs.filter((x) => x.t !== 'dispcmd');
+  L.handle(tv, { t: 'dispcmd', cmd: { kind: 'add', dart: { seg: 21, mult: 1 } } });
+  L.handle(tv, { t: 'dispcmd', cmd: { kind: 'hack' } });
+  L.handle(cam, { t: 'dispcmd', cmd: { kind: 'next' } });
+  assert(!phone.last('dispcmd'), 'ungültige Befehle und Befehle der 2. Kamera werden verworfen');
+  L.handle(tv, { t: 'dispcmd', cmd: { kind: 'next' } });
+  assert(phone.last('dispcmd').cmd.kind === 'next', 'Weiter vom Bildschirm');
   // Bildschirm verliert die Verbindung und kommt wieder
   const tok = tv.last('linkcode').token;
   tv.readyState = 3; L.detach(tv);

@@ -12,7 +12,7 @@ Dazu Statistik (Heatmap, Felder, Average, Doppelquote …), Konten per Google od
 | `rooms.js` | Online: Räume mit Freunden, Zufallsgegner, öffentliche Turniere, Live-Kamerabild, Melden, Aufgabe bei Abwesenheit |
 | `links.js` | Geräte koppeln: Fernseher/Laptop als Bildschirm, zweites Handy als 2. Kamera |
 | `auth.js` | Prüft die Firebase-Anmeldung auf dem Server (ohne Zusatzpaket) |
-| `reports.js` | Meldungen per E-Mail (Brevo) + Übersicht `/admin/meldungen` |
+| `reports.js` | Meldungen per Telegram (oder Discord/Brevo) + Übersicht `/admin/meldungen` |
 | `public/game.js` | Spiellogik X01 (Bust, Double-Out, Undo, Checkout-Vorschläge), läuft im Browser und auf dem Server |
 | `public/board.js` | Scheibengeometrie (mm), Punkteberechnung, SVG-Scheibe |
 | `public/boardfinder.js` | Findet die Scheibe über die Farbringe (Auto-Kalibrierung, Nachführen), Kameramodell |
@@ -31,20 +31,34 @@ Dazu Statistik (Heatmap, Felder, Average, Doppelquote …), Konten per Google od
 | `firestore.rules` | Sicherheitsregeln für die Datenbank (in Firebase einfügen) |
 | `test/` | `npm test`: Regeln, Erkennung, Pfeile ziehen, Online, Turniere, Kopplung, 2 Kameras, Anmeldung, Lernpfad, Sprachbefehle |
 
-## Neu in dieser Version
+## Neu in Version 2.1
+
+- **Raster nicht mehr verdreht (18 auf der 20):** Die gespeicherte Kalibrierung vom letzten Mal wird beim Kamerastart nicht mehr blind übernommen. Die Scheibe wird frisch gesucht und verglichen. Wo die 20 ist, sagt der **Lagesensor des Handys** (die Scheibe hängt mit der 20 nach oben), auch wenn das Handy schräg steht. Ohne Sensor gilt „oben im Bild“. Hat man die 20 beim Einrichten selbst angetippt, merkt sich die App das.
+- **Automatische Kalibrierung legt das Raster sauber auf**, auch direkt im Spiel, ohne vorher in den Kalibriermodus zu gehen.
+- **Automatischer Zoom:** Die Kamera zoomt von selbst auf die Scheibe (mit Platz für herausragende Pfeile). Das ist genauer und braucht weniger Rechenleistung. Nie mitten in einer Aufnahme. Ist die Scheibe länger verloren, zoomt die App heraus und sucht neu.
+- **Im Spiel nichts mehr verstellbar:** Wischen über das Kamerabild scrollt einfach die Seite. Zoom-Regler und Debug gibt es nur noch unter **Kamera einrichten**.
+- **Spracheingabe hört dauerhaft zu:** Während der eigenen Ansage ist das Mikro kurz aus (sonst hört es sich selbst und bleibt auf Android hängen). Eine hängende Erkennung wird automatisch neu gestartet, doppelte Ergebnisse werden ignoriert.
+- **Auto-Weiter nach „Weiter“ von Hand:** Drückt man „Weiter“, nachdem die Pfeile schon gezogen sind, wartet die Erkennung nicht mehr auf ein Ziehen, das nie kommt. Auto-Weiter klappt in der nächsten Aufnahme sofort wieder.
+- **Laptop/Fernseher:**
+  - Würfe am Laptop korrigieren (Pfeil anklicken), fehlende Pfeile eintragen, „Weiter“ und „Zurück“.
+  - **Letzte Aufnahmen** aller Spieler werden angezeigt, die letzte ist auch korrigierbar. Das Trefferbild zeigt nach dem Weiterschalten noch die letzten Pfeile.
+- **Weniger Leistung nötig:** Das Kamerabild wird direkt angezeigt statt 60× pro Sekunde umgezeichnet. Für die Bewegungserkennung reicht ein kleines Bild, das große wird nur geholt, wenn es ruhig ist. Im Test braucht das Spiel rund **halb so viel Rechenzeit** wie vorher, bei gleicher Erkennung.
+- **Sounds:** Treffer-Einschlag (Triple/Double heller), Fanfare bei 180, Ton bei 100+, „Überworfen“, Sieg, Spielerwechsel. Abschaltbar in den Einstellungen.
+- **Scrollleiste** rechts ganz schlicht: eine dünne Linie.
+
+## Neu in Version 2.0
 
 - **Ansage-Knopf** (Lautsprecher) neben „Sprachbefehle“: Die Ansage startet immer aus und wird mit einem Tipp eingeschaltet. Erst dieser Tipp erlaubt dem Browser den Ton, deshalb ging sie früher erst nach dem Aus- und Einschalten.
 - **„Hey DartScan“** wird jetzt nach Klang erkannt: auch „Dartskind“, „Dartskin“, „Darts kann“, „Dart Skin“, „Darts Kinn“, „Datscan“ … „Das kann“ oder „Dort kann“ lösen dagegen nicht aus.
 - **Automatische Scheibensuche ohne Knopf:** Kamera an, dann wird die Scheibe gesucht und sofort übernommen. Im Spiel gibt es kein Kalibrieren von Hand mehr, nur „Scheibe neu suchen“. Wird die Scheibe verloren, sucht die App selbst weiter. Von Hand geht es nur noch unter **Kamera einrichten → Manuell**.
 - **Pfeile ziehen → nächster Spieler:** Das klappt jetzt auch nach 1 oder 2 Pfeilen. Es bleibt nicht mehr hängen, wenn nach dem Ziehen kleine Spuren bleiben (Löcher, Fasern), das Handy wackelt, sich das Licht ändert oder jemand beim Ziehen vor der Scheibe steht. Zieht man die Pfeile einzeln, entsteht kein falscher Extra-Pfeil mehr.
-- **Scroll-Streifen** rechts: ganz normal wischen, der Browser scrollt selbst.
 - **Konto nötig** für Online, Turniere und Lernpfad. Das lokale Spiel geht weiterhin ohne Anmeldung. Der Server prüft die Anmeldung selbst.
 - **Online gegen Fremde:**
   - **Zufallsgegner:** 301 oder 501, sofort los, wer anfängt wird ausgelost.
   - **Öffentliche Turniere:** Blitz 4 Spieler / 501-Cup 8 Spieler / Masters 16 Spieler. Sie starten automatisch, wenn das Feld voll ist, oder nach der Wartezeit mit Freilosen. Es gibt keinen Turnierleiter: Wer ca. 75 s offline ist oder 2½ Minuten nicht wirft, verliert das Match.
 - **Fair Play:**
   - Online sieht man das **Live-Bild der Scheibe des Gegners**, inklusive Markierung des erkannten Treffers.
-  - **Melden** schickt dir eine E-Mail mit den letzten Kamerabildern und dem Spielverlauf.
+  - **Melden** schickt dir eine Telegram-Nachricht mit den letzten Kamerabildern und dem Spielverlauf.
   - Fremde dürfen keine Pfeile des Gegners ändern.
 - **Lernpfad als Karte:**
   - 32 Übungen statt 15, jede Stufe endet mit einer Prüfung.
@@ -59,12 +73,24 @@ Dazu Statistik (Heatmap, Felder, Average, Doppelquote …), Konten per Google od
 | Variable | Wofür | Muss? |
 |---|---|---|
 | `FIREBASE_PROJECT_ID` | Projekt für die Anmeldeprüfung (Standard `dart-1f6be`) | nein |
-| `BREVO_API_KEY` | E-Mails bei Meldungen | für E-Mails ja |
-| `REPORT_TO` | Empfänger der Meldungen (Standard `dart.scan.dh@gmail.com`) | nein |
-| `REPORT_FROM` | Absender – muss in Brevo als Absender bestätigt sein (Standard wie `REPORT_TO`) | nein |
+| `TELEGRAM_BOT_TOKEN` | Meldungen als Telegram-Nachricht mit Bildern aufs Handy (empfohlen) | für Nachrichten ja |
+| `TELEGRAM_CHAT_ID` | Deine Chat-ID (zeigt dir die Übersicht `/admin/meldungen` an) | für Telegram ja |
+| `DISCORD_WEBHOOK_URL` | Alternative: Meldungen in einen Discord-Kanal | nein |
+| `BREVO_API_KEY`, `REPORT_TO`, `REPORT_FROM` | Alternative: Meldungen per E-Mail über Brevo | nein |
 | `ADMIN_KEY` | Passwort für die Übersicht `https://…/admin/meldungen?key=DEIN_PASSWORT` | nein |
 | `BANNED_UIDS` | Gesperrte Konten (Konto-IDs aus der Meldung, mit Komma getrennt) | nein |
 | `GOOGLE_TTS_KEY`, `TTS_VOICE` | Natürliche Server-Stimme (wie bisher) | nein |
+
+**Meldungen aufs Handy (Telegram) einrichten:**
+1. In Telegram den Chat **@BotFather** öffnen, `/newbot` schreiben, einen Namen und einen Benutzernamen (endet auf `bot`) wählen.
+2. BotFather schickt dir einen **Token** (sieht aus wie `123456:ABC-…`). Auf Render bei deinem Dienst: **Environment → Add Environment Variable** → `TELEGRAM_BOT_TOKEN` = der Token. Zusätzlich `ADMIN_KEY` = ein Passwort deiner Wahl. Speichern (Render startet neu).
+3. In Telegram deinen neuen Bot öffnen und **Start** tippen (bzw. `/start` schreiben).
+4. Im Browser `https://DEINE-ADRESSE/admin/meldungen?key=DEIN_PASSWORT` öffnen. Dort steht dein Name mit einer Zahl (deine Chat-ID). Auf Render `TELEGRAM_CHAT_ID` = diese Zahl eintragen und speichern.
+5. Seite neu öffnen und **Test-Nachricht senden** tippen – die Nachricht kommt in Telegram an.
+
+Sicherheit: Den Bot-Token und `ADMIN_KEY` nur auf Render eintragen, nie in eine Datei auf GitHub. Ist der Token doch einmal irgendwo sichtbar geworden: in @BotFather `/revoke` und den neuen Token auf Render eintragen. Gesendet wird nur an die eingetragene Chat-ID – schreibt ein Fremder deinem Bot, bekommt er nichts.
+
+Normale E-Mail (Gmail usw.) geht auf Render im Gratis-Plan nicht, weil Render die Mail-Ports sperrt.
 
 Wichtig: Turniere, Räume und Kopplungen liegen im Speicher des Servers. Bei einem Redeploy gehen laufende Spiele verloren, deshalb am besten nicht während eines Turniers hochladen.
 

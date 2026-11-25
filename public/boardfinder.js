@@ -383,8 +383,54 @@
     }
     // Kameraposition im Scheiben-System (mm): C = -R^T t
     const center = [r1, r2, r3].map((r) => -(r[0] * t[0] + r[1] * t[1] + r[2] * t[2]));
-    return { f, project, flightDir, front, camZ: Math.abs(camZ), center };
+    return { f, project, flightDir, front, camZ: Math.abs(camZ), center, r1, r2, r3 };
   }
 
-  return { CAL_DST, cameraFromH, solveH, applyH, invertH, colorMaps, blurMaps, scoreH, scorePts, refine, autoFind, orientUp, reorient, warpGray, nelderMead };
+  // ---------- Wo ist die 20? ----------
+  // Das Rot/Grün-Muster wiederholt sich alle 36°, die Farben allein verraten die 20 also nicht.
+  // Reihenfolge der Hinweise: 1) Schwerkraft (Lagesensor des Handys: die Scheibe hängt mit der 20 nach oben),
+  // 2) Richtung der 20 in der bisherigen Kalibrierung (gleiche Kameraposition), 3) „oben im Bild“.
+  // pts: 4 Kalibrierpunkte in Pixeln. opts: { up: Oben-Richtung in Kamera-Koordinaten [x rechts, y unten, z nach vorn],
+  //   prevDir: Bildrichtung (Grad, 0 = oben, im Uhrzeigersinn) der 20 in der alten Kalibrierung, pp, fGuess }
+  const angDiff = (a, b) => Math.abs(((a - b + 540) % 360) - 180);
+  function rotate(pts, deg) {
+    const Hb2i = solveH(CAL_DST, pts);
+    return CAL_DST.map((_, i) => applyH(Hb2i, ...Board.polar(170, i * 90 + deg)));
+  }
+  function dirOf20(pts) {
+    const Hb2i = solveH(CAL_DST, pts);
+    const c = applyH(Hb2i, 0, 0), p = applyH(Hb2i, 0, -170);
+    return (Math.atan2(p[0] - c[0], -(p[1] - c[1])) * 180) / Math.PI;
+  }
+  function chooseRotation(pts, w, h, opts = {}) {
+    const Hb2i = solveH(CAL_DST, pts);
+    if (!Hb2i) return { pts, how: 'none' };
+    const c = applyH(Hb2i, 0, 0);
+    const cands = [];
+    for (let k = 0; k < 10; k++) {
+      const p = applyH(Hb2i, ...Board.polar(170, k * 36));
+      cands.push({ deg: k * 36, dir: (Math.atan2(p[0] - c[0], -(p[1] - c[1])) * 180) / Math.PI });
+    }
+    const nearestDir = (dir) => cands.reduce((a, b) => (angDiff(b.dir, dir) < angDiff(a.dir, dir) ? b : a));
+    const byImage = nearestDir(0);
+    let pick = byImage, how = 'bild';
+    if (opts.up) {
+      const cam = cameraFromH(Hb2i, w, h, opts.pp, opts.fGuess);
+      if (cam) {
+        const u = opts.up, dot = (r) => r[0] * u[0] + r[1] * u[1] + r[2] * u[2];
+        const bx = dot(cam.r1), by = dot(cam.r2), inPlane = Math.hypot(bx, by);
+        if (inPlane > 0.5) { // Scheibe hängt (fast) senkrecht – sonst ist der Sensorwert unbrauchbar
+          let ang = (Math.atan2(bx, -by) * 180) / Math.PI;
+          let g = cands.reduce((a, b) => (angDiff(b.deg, ang) < angDiff(a.deg, ang) ? b : a));
+          // Vorzeichen des Sensors ist je nach Gerät verschieden: nie „kopfüber“ zum Bild wählen
+          if (angDiff(g.dir, byImage.dir) > 90) { ang += 180; g = cands.reduce((a, b) => (angDiff(b.deg, ang) < angDiff(a.deg, ang) ? b : a)); }
+          if (angDiff(g.dir, byImage.dir) <= 90) { pick = g; how = 'sensor'; }
+        }
+      }
+    }
+    if (how === 'bild' && opts.prevDir != null && angDiff(opts.prevDir, 0) < 65) { pick = nearestDir(opts.prevDir); how = 'vorher'; }
+    return { pts: pick.deg ? rotate(pts, pick.deg) : pts, how, deg: pick.deg };
+  }
+
+  return { CAL_DST, cameraFromH, chooseRotation, dirOf20, rotate, solveH, applyH, invertH, colorMaps, blurMaps, scoreH, scorePts, refine, autoFind, orientUp, reorient, warpGray, nelderMead };
 });

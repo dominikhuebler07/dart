@@ -93,6 +93,19 @@ function createLinks(opts = {}) {
         for (const L of devicesOf(ws, 'display')) { L.last = msg; send(L.device, msg); }
         return;
       }
+      case 'dispcmd': { // Bildschirm (Laptop) -> Haupt-Handy: Wurf korrigieren/eintragen, weiter, zurück
+        const L = ws.link;
+        if (!L || L.role !== 'display' || !L.ctl) return;
+        const c = m.cmd || {};
+        const kind = ['correct', 'add', 'remove', 'next', 'undo'].includes(c.kind) ? c.kind : null;
+        if (!kind) return;
+        const seg = Number(c.dart && c.dart.seg), mult = Number(c.dart && c.dart.mult);
+        const dart = (seg === 0 && mult === 0) || (seg >= 1 && seg <= 20 && mult >= 1 && mult <= 3) || (seg === 25 && (mult === 1 || mult === 2)) ? { seg, mult } : null;
+        if ((kind === 'correct' || kind === 'add') && !dart) return;
+        const index = Number.isInteger(c.index) && c.index >= 0 && c.index < 3 ? c.index : null;
+        send(L.ctl, { t: 'dispcmd', code: L.code, cmd: { kind, dart, index, which: c.which === 'last' ? 'last' : 'cur' } });
+        return;
+      }
       case 'cam2ctl': { // Haupt-Handy -> 2. Kamera: Aufnahme beginnt / Pfeile ziehen / Pause
         for (const L of devicesOf(ws, 'cam2')) send(L.device, { t: 'cam2ctl', phase: m.phase, key: m.key });
         return;
@@ -109,7 +122,7 @@ function createLinks(opts = {}) {
       }
     }
   }
-  const TYPES = new Set(['linknew', 'linkresume', 'linkjoin', 'unlink', 'show', 'cam2ctl', 'cam2dart', 'cam2state']);
+  const TYPES = new Set(['linknew', 'linkresume', 'linkjoin', 'unlink', 'show', 'dispcmd', 'cam2ctl', 'cam2dart', 'cam2state']);
 
   // Kamerabild des Haupt-Handys an seine Bildschirme
   function relay(ws, msg) {

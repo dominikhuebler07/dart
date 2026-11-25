@@ -1,6 +1,6 @@
 {
   "name": "dart-scanner",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Dartscheibe per Handykamera scannen und Punkte automatisch zählen – lokal und online",
   "main": "server.js",
   "scripts": {
