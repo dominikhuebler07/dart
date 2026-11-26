@@ -709,3 +709,7 @@ body.display-mode .topbar, body.display-mode .tabbar, body.display-mode main, bo
 .dp-picker button.on { background: var(--brass); color: var(--bg); }
 .dp-picker button.warn { color: #ff6a5f; }
 .dp-picker button.ghost { color: var(--dim); }
+
+.cam-tools .btn.wide { flex: 1 1 100%; }
+.update-bar { position: fixed; left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); z-index: 300; display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 10px 14px; border-radius: 14px; background: var(--surface); border: 1px solid var(--brass); font-weight: 700; }
+.dp-diag { position: fixed; left: 8px; bottom: 8px; z-index: 260; margin: 0; max-width: 46vw; max-height: 60vh; overflow: auto; padding: 10px 12px; border-radius: 10px; background: rgba(0, 0, 0, 0.82); color: #9fe8b9; font: 12px/1.35 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; }

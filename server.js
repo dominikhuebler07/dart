@@ -8,9 +8,39 @@ const { createLinks } = require('./links.js');
 const { createAuth } = require('./auth.js');
 const { createReports } = require('./reports.js');
 
+const fs = require('fs');
+const crypto = require('crypto');
+
 const PORT = process.env.PORT || 3000;
 const app = express();
-app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
+
+// ---------- Immer die neueste Version ausliefern ----------
+// Jede Version bekommt eine Kennung (aus dem Inhalt der Dateien). Die Seite lädt ihre Dateien mit ?v=Kennung,
+// damit kein Browser (v. a. Safari am iPhone) alte Dateien aus dem Zwischenspeicher nimmt. Unter /version fragt
+// die Seite regelmäßig nach – gibt es eine neuere, lädt sie sich selbst neu.
+const PUB = path.join(__dirname, 'public');
+const VERSION = require('./package.json').version;
+const BUILD = (() => {
+  const h = crypto.createHash('sha1');
+  for (const f of fs.readdirSync(PUB).sort()) { try { h.update(f); h.update(fs.readFileSync(path.join(PUB, f))); } catch (_) {} }
+  return h.digest('hex').slice(0, 10);
+})();
+let indexHtml = null;
+function sendIndex(_req, res) {
+  if (!indexHtml) {
+    indexHtml = fs.readFileSync(path.join(PUB, 'index.html'), 'utf8')
+      .replace(/(<script[^>]*\ssrc=")([^"?:]+\.js)(")/g, `$1$2?v=${BUILD}$3`)
+      .replace(/(<link rel="stylesheet" href=")([^"?:]+\.css)(")/g, `$1$2?v=${BUILD}$3`)
+      .replace('</head>', `  <meta name="ds-build" content="${BUILD}" />\n  <meta name="ds-version" content="${VERSION}" />\n</head>`);
+  }
+  res.set({ 'Cache-Control': 'no-cache, no-store, must-revalidate', 'Content-Type': 'text/html; charset=utf-8' }).send(indexHtml);
+}
+app.get(['/', '/index.html', '/index'], sendIndex);
+app.get('/version', (_req, res) => res.set('Cache-Control', 'no-store').json({ v: BUILD, version: VERSION }));
+app.use(express.static(PUB, {
+  extensions: ['html'],
+  setHeaders(res, p) { if (/\.(js|css|html|json)$/.test(p)) res.set('Cache-Control', 'no-cache'); },
+}));
 app.get('/health', (_req, res) => res.json({ ok: true, rooms: rooms.size, tourns: tourns.size }));
 
 // ---------- Natürliche Stimme (optional): Google Cloud Text-to-Speech ----------

@@ -402,6 +402,8 @@
     const c = applyH(Hb2i, 0, 0), p = applyH(Hb2i, 0, -170);
     return (Math.atan2(p[0] - c[0], -(p[1] - c[1])) * 180) / Math.PI;
   }
+  // opts.upAngle: Richtung von „oben“ im Bild laut Lagesensor (Grad, 0 = oben im Bild, im Uhrzeigersinn).
+  // Das ist nur die Neigung (Drehung) des Handys – robust, braucht keine Brennweite oder Kameraposition.
   function chooseRotation(pts, w, h, opts = {}) {
     const Hb2i = solveH(CAL_DST, pts);
     if (!Hb2i) return { pts, how: 'none' };
@@ -412,23 +414,12 @@
       cands.push({ deg: k * 36, dir: (Math.atan2(p[0] - c[0], -(p[1] - c[1])) * 180) / Math.PI });
     }
     const nearestDir = (dir) => cands.reduce((a, b) => (angDiff(b.dir, dir) < angDiff(a.dir, dir) ? b : a));
-    const byImage = nearestDir(0);
-    let pick = byImage, how = 'bild';
-    if (opts.up) {
-      const cam = cameraFromH(Hb2i, w, h, opts.pp, opts.fGuess);
-      if (cam) {
-        const u = opts.up, dot = (r) => r[0] * u[0] + r[1] * u[1] + r[2] * u[2];
-        const bx = dot(cam.r1), by = dot(cam.r2), inPlane = Math.hypot(bx, by);
-        if (inPlane > 0.5) { // Scheibe hängt (fast) senkrecht – sonst ist der Sensorwert unbrauchbar
-          let ang = (Math.atan2(bx, -by) * 180) / Math.PI;
-          let g = cands.reduce((a, b) => (angDiff(b.deg, ang) < angDiff(a.deg, ang) ? b : a));
-          // Vorzeichen des Sensors ist je nach Gerät verschieden: nie „kopfüber“ zum Bild wählen
-          if (angDiff(g.dir, byImage.dir) > 90) { ang += 180; g = cands.reduce((a, b) => (angDiff(b.deg, ang) < angDiff(a.deg, ang) ? b : a)); }
-          if (angDiff(g.dir, byImage.dir) <= 90) { pick = g; how = 'sensor'; }
-        }
-      }
-    }
-    if (how === 'bild' && opts.prevDir != null && angDiff(opts.prevDir, 0) < 65) { pick = nearestDir(opts.prevDir); how = 'vorher'; }
+    let pick = nearestDir(0), how = 'bild';
+    if (opts.upAngle != null && Number.isFinite(opts.upAngle)) {
+      let a = opts.upAngle;
+      if (angDiff(a, 0) > 100) a += 180; // Vorzeichen je nach Gerät verschieden (iPhone): Handy steht nie kopfüber
+      pick = nearestDir(a); how = 'sensor';
+    } else if (opts.prevDir != null && angDiff(opts.prevDir, 0) < 65) { pick = nearestDir(opts.prevDir); how = 'vorher'; }
     return { pts: pick.deg ? rotate(pts, pick.deg) : pts, how, deg: pick.deg };
   }
 

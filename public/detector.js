@@ -755,7 +755,7 @@
       const pp = [((0.5 - vw.x) / vw.w) * w, ((0.5 - vw.y) / vw.h) * h];
       const fGuess = (0.72 * this.hz * w) / vw.w;
       const prevDir = opts.prev ? F.dirOf20(opts.prev.map(([u, v]) => [u * w, v * h])) : null;
-      const r = F.chooseRotation(px, w, h, { up: opts.up || null, prevDir, pp, fGuess });
+      const r = F.chooseRotation(px, w, h, { upAngle: opts.upAngle, prevDir, pp, fGuess });
       return { pts: r.pts.map(([x, y]) => [x / w, y / h]), how: r.how };
     }
 

@@ -129,12 +129,13 @@
       let state = scr === 'learnplay' && learnSnap ? learnSnap : (scr === 'game' ? gameState() : null);
       if (!state) state = { kind: 'idle', screen: scr };
       state.say = sayQueue.slice(-4);
+      try { if (DS.diag) state.diag = DS.diag(); } catch (_) {}
       net.send({ t: 'show', state });
     };
     if (now || Date.now() - lastPush > 250) go(); else pushT = setTimeout(go, 250);
   }
   // regelmäßig auffrischen (falls der Bildschirm neu lädt)
-  setInterval(() => { if (DS.linkCount) { sayQueue = sayQueue.filter((s) => s.id > sayId - 4); pushState(false); } }, 4000);
+  setInterval(() => { if (DS.linkCount) { sayQueue = sayQueue.filter((s) => s.id > sayId - 4); pushState(false); } }, 2000);
 
   // ---------- 2. Kamera verrechnen ----------
   const matcher = window.Fuse.createMatcher({
@@ -279,7 +280,16 @@
     disp.code = code; disp.linked = false;
     renderDisplay();
   }
+  // Diagnose (?bildschirm&diagnose): Messwerte des Handys anzeigen – zur Fehlersuche am echten Aufbau
+  function renderDiag(d) {
+    if (!disp.diagOn) return;
+    let el = document.getElementById('dp-diag');
+    if (!el) { el = document.createElement('pre'); el.id = 'dp-diag'; el.className = 'dp-diag'; document.body.appendChild(el); }
+    if (!d) { el.textContent = 'Diagnose: noch keine Daten vom Handy (Handy koppeln, Spiel starten, Kamera an)'; return; }
+    el.textContent = Object.entries(d).map(([k, v]) => k.padEnd(10) + ' ' + (typeof v === 'object' ? JSON.stringify(v) : v)).join('\n');
+  }
   net.on('show', (m) => {
+    renderDiag(m.state && m.state.diag);
     if (role !== 'display') return;
     disp.linked = true; disp.offline = false;
     const prev = disp.state;
@@ -395,7 +405,11 @@
 
   // ---------- Start über Link ----------
   const p = new URLSearchParams(location.search);
-  if (p.has('bildschirm') || p.has('tv')) { history.replaceState(null, '', location.pathname + '?bildschirm'); openDisplay(); }
+  if (p.has('bildschirm') || p.has('tv')) {
+    disp.diagOn = p.has('diagnose');
+    history.replaceState(null, '', location.pathname + '?bildschirm' + (disp.diagOn ? '&diagnose' : ''));
+    openDisplay();
+  }
   else if (p.has('kamera2')) { history.replaceState(null, '', location.pathname); openCam2(); }
   else if (p.get('koppeln')) {
     const code = p.get('koppeln');

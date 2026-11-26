@@ -266,6 +266,31 @@
   const myTurn = () => !!game && (mode === 'local' || game.players[game.current].id === myId);
   const canEdit = () => myTurn() || (mode === 'online' && room && room.hostId === myId);
   window.DS.canEdit = () => canEdit();
+
+  // ---------- Neue Version? Dann neu laden ----------
+  // Safari am iPhone behält offene Tabs oft tagelang mit der alten Version. Die Seite fragt deshalb regelmäßig nach.
+  const BUILD = (document.querySelector('meta[name="ds-build"]') || {}).content || '';
+  const APP_VERSION = (document.querySelector('meta[name="ds-version"]') || {}).content || '';
+  window.DS.build = BUILD; window.DS.version = APP_VERSION;
+  let updateShown = false;
+  async function checkUpdate() {
+    if (!BUILD || updateShown) return;
+    try {
+      const j = await fetch('/version', { cache: 'no-store' }).then((r) => r.json());
+      if (!j.v || j.v === BUILD) return;
+      const busy = (screen === 'game' && game && !game.finished && mode !== 'test') || screen === 'learnplay' || screen === 'cam2';
+      if (!busy) { location.reload(); return; }
+      updateShown = true;
+      const bar = document.createElement('div');
+      bar.className = 'update-bar';
+      bar.innerHTML = '<span>Neue DartScan-Version ist da</span><button class="btn cta">Jetzt laden</button>';
+      bar.querySelector('button').onclick = () => location.reload();
+      document.body.appendChild(bar);
+    } catch (_) {}
+  }
+  setTimeout(checkUpdate, 3000);
+  setInterval(checkUpdate, 5 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkUpdate(); });
   // Befehle vom gekoppelten Bildschirm (Laptop): Wurf korrigieren/eintragen, weiter, zurück
   window.DS.displayCmd = (c) => {
     if (!game || screen !== 'game') return;
@@ -653,6 +678,7 @@
     $('#s-automiss').checked = settings.autoMiss === true;
     $('#s-lock').checked = settings.lockCam !== false;
     $('#s-sfx').checked = !!(window.Sound && window.Sound.on);
+    $('#s-version').textContent = 'DartScan ' + (APP_VERSION || '?') + (BUILD ? ' · ' + BUILD : '');
     $('#s-autozoom').checked = settings.autoZoom !== false;
     renderVoices();
     $('#s-direct').checked = settings.voiceDirect !== false;
@@ -828,7 +854,7 @@
     hwActual = 1;
     updateZoomRow();
     enableMotion();
-    await applyZoom(zoom, false);
+    await applyZoom(zoom, false, true);
     detector.start(video);
     requestWakeLock();
     layoutKey = '';
@@ -887,7 +913,27 @@
   $('#b-cam-off').onclick = camOff;
   $('#b-debug').onclick = () => { debug = !debug; $('#b-debug').classList.toggle('on', debug); invalidate(); };
   // Zoom-Regler gibt es nur beim Kamera-Einrichten – im Spiel stellt sich der Zoom von selbst ein
-  function updateZoomRow() { $('#zoom-row').classList.toggle('hidden', !(stream && mode === 'test')); $('#b-debug').classList.toggle('hidden', mode !== 'test'); }
+  // Im Spiel/Lernen gibt es unter der Kamera nur „Kamera neu starten“ – alles andere nur unter „Kamera einrichten“
+  function updateZoomRow() {
+    const setup = mode === 'test';
+    $('#zoom-row').classList.toggle('hidden', !(stream && setup));
+    for (const id of ['#b-calib', '#b-debug', '#b-settings', '#b-cam-off']) $(id).classList.toggle('hidden', !setup);
+    $('#b-restart').classList.toggle('hidden', setup);
+    if (!setup && debug) { debug = false; $('#b-debug').classList.remove('on'); }
+  }
+  // Kamera neu starten: Kamera aus/an, ganzes Bild, Scheibe frisch suchen (nur eine selbst angetippte 20 bleibt gemerkt)
+  $('#b-restart').onclick = async () => {
+    const b = $('#b-restart');
+    b.disabled = true;
+    try {
+      if (stream) camOff();
+      Object.assign(zoom, { z: 1, cx: 0.5, cy: 0.5 }); LS.set('ds.zoom', zoom);
+      lostSince = 0;
+      if (!(await camOn())) return;
+      searchNow = true; searchFresh = !detector.userOriented;
+      toast('Kamera neu gestartet – suche die Scheibe …');
+    } finally { b.disabled = false; }
+  };
   window.DS.updateZoomRow = updateZoomRow;
   // In Spiel/Lernen gibt es kein Kalibrieren von Hand: der Knopf sucht die Scheibe einfach automatisch neu.
   $('#b-calib').onclick = async () => {
@@ -928,7 +974,9 @@
     $('#z-range').value = zoom.z;
     $('#z-val').textContent = zoom.z.toFixed(1).replace('.', ',') + '×' + (hwCaps && hwActual > 1.01 ? ' (optisch ' + hwActual.toFixed(1).replace('.', ',') + '×)' : '');
   }
-  function applyZoom(st, save = true) {
+  // auto = true: automatischer Zoom – nur digital (Ausschnitt), die Optik wird nie hochgeschaltet.
+  // Umschalten der Optik lässt das Bild kurz hängen und verstellt Schärfe/Belichtung.
+  function applyZoom(st, save = true, auto = false) {
     Object.assign(zoom, clampZoom(st));
     if (save) LS.set('ds.zoom', zoom);
     updateZoomUI();
@@ -936,6 +984,7 @@
     zoomChain = zoomChain.then(async () => {
       if (!stream) return;
       let hz = hwFor(zoom);
+      if (auto) hz = Math.min(hz, hwActual);
       if (hwCaps && Math.abs(hz - hwActual) > 0.01) {
         try { await track().applyConstraints({ advanced: [{ zoom: hz }] }); hwActual = hz; await sleep(450); }
         catch (_) { hz = hwActual; }
@@ -1168,22 +1217,24 @@
     } catch (_) {}
   }
   window.addEventListener('pointerdown', () => { if (stream && !grav.on) enableMotion(); }, { capture: true, passive: true });
-  // „Oben“ in Kamera-Koordinaten (x rechts, y unten, z in Blickrichtung der Rückkamera)
-  function upCam() {
+  // Richtung von „oben“ im Kamerabild (Grad, 0 = oben, im Uhrzeigersinn) – aus der Neigung des Handys
+  function upAngle() {
     if (!grav.v || Date.now() - grav.t > 4000) return null;
     const [ax, ay, az] = grav.v, n = Math.hypot(ax, ay, az);
     if (n < 6 || n > 14) return null; // Handy wird gerade bewegt
     const deg = (screen.orientation && typeof screen.orientation.angle === 'number') ? screen.orientation.angle : (window.orientation || 0);
     const t = (deg * Math.PI) / 180;
     const sx = ax * Math.cos(t) - ay * Math.sin(t), sy = ax * Math.sin(t) + ay * Math.cos(t);
-    return [sx / n, -sy / n, -az / n];
+    if (Math.hypot(sx, sy) / n < 0.45) return null; // Handy liegt fast flach: Neigung nicht aussagekräftig
+    return (Math.atan2(sx, sy) * 180) / Math.PI;
   }
+  window.DS.upAngle = upAngle;
 
   // ---------- Automatische Scheibensuche (ohne Knopf) ----------
   // Läuft, solange die Kamera an ist und (noch) keine Scheibe bekannt ist, die Scheibe verloren ging,
   // im Einrichten-Modus gesucht wird – und einmal bei jedem Kamerastart: Die gespeicherte Kalibrierung vom letzten Mal
   // wird nicht blind übernommen (Handy steht oft etwas anders -> Raster rastet sonst eine Zahl daneben ein).
-  let searchNow = false, searchFresh = false, searchBusy = false, verifyOn = false, verifyTries = 0, lostTick = 0;
+  let searchNow = false, searchFresh = false, searchBusy = false, verifyOn = false, verifyTries = 0, lostTick = 0, lastOrient = null;
   function startVerify() { verifyOn = true; verifyTries = 0; }
   setInterval(() => {
     if (!stream || searchBusy || !detector.rgba) return;
@@ -1191,7 +1242,7 @@
     if (calib && !inSetup) return; // Einrichten: Nutzer prüft gerade bzw. setzt Punkte von Hand
     const lostFor = detector.H && detector.lost && lostSince ? Date.now() - lostSince : 0;
     // lange verloren und gezoomt: erst wieder das ganze Bild ansehen
-    if (lostFor > 9000 && zoom.z > 1.01) { applyZoom({ z: 1, cx: 0.5, cy: 0.5 }); lostSince = Date.now() - 2600; startVerify(); return; }
+    if (lostFor > 9000 && zoom.z > 1.01) { applyZoom({ z: 1, cx: 0.5, cy: 0.5 }, true, true); lostSince = Date.now() - 2600; startVerify(); return; }
     const lostLong = lostFor > 2500;
     if (lostLong && !inSetup && !searchNow && !verifyOn && ++lostTick % 3) return; // verdeckt (z. B. beim Ziehen): seltener suchen
     if (!(inSetup || !detector.H || lostLong || searchNow || verifyOn)) { maybeAutoZoom(false); return; }
@@ -1201,7 +1252,7 @@
       if (!r) {
         if (verifyOn) {
           verifyTries++;
-          if (verifyTries >= 3 && zoom.z > 1.01 && !detector.H) { applyZoom({ z: 1, cx: 0.5, cy: 0.5 }); verifyTries = 0; }
+          if (verifyTries >= 3 && zoom.z > 1.01) { applyZoom({ z: 1, cx: 0.5, cy: 0.5 }, true, true); verifyTries = 0; }
           else if (verifyTries >= 6) verifyOn = false; // alte Kalibrierung behalten (wird laufend nachgeführt)
         }
         if (inSetup) updateCalibHint();
@@ -1211,7 +1262,8 @@
       const prev = detector.calib;
       // Bisherige Ausrichtung nur nutzen, wenn sie verlässlich ist: vom Nutzer angetippt oder gerade erst verloren
       const usePrev = prev && !searchFresh && (detector.userOriented || lostLong);
-      const o = detector.orientPts(r.pts, { up: upCam(), prev: usePrev ? prev : null });
+      const o = detector.orientPts(r.pts, { upAngle: upAngle(), prev: usePrev ? prev : null });
+      lastOrient = { how: o.how, up: upAngle(), t: Date.now() };
       const pts = o.pts;
       const hadCalib = !!detector.H;
       const checkOnly = verifyOn && hadCalib && !lostLong && !searchNow && !inSetup;
@@ -1258,9 +1310,36 @@
     const cut = b.x0 < cur.x - 0.005 || b.y0 < cur.y - 0.005 || b.x1 > cur.x + cur.w + 0.005 || b.y1 > cur.y + cur.h + 0.005;
     const gain = target.z / zoom.z;
     const shift = Math.hypot(target.cx - zoom.cx, target.cy - zoom.cy) * zoom.z;
-    if (cut || gain > 1.2 || (force && (Math.abs(gain - 1) > 0.1 || shift > 0.08))) applyZoom(target);
+    if (cut || gain > 1.2 || (force && (Math.abs(gain - 1) > 0.1 || shift > 0.08))) applyZoom(target, true, true);
   }
   window.DS.autoZoom = () => maybeAutoZoom(true);
+  // Messwerte für die Diagnose-Ansicht am gekoppelten Laptop (?bildschirm&diagnose)
+  window.DS.diag = () => {
+    const d = detector, r3 = (x) => (x == null ? null : Math.round(x * 1000) / 1000);
+    const vw = video.videoWidth, vh = video.videoHeight;
+    let dir20 = null;
+    try { if (d.calib && d.w) dir20 = Math.round(window.BoardFinder.dirOf20(d.calib.map(([u, v]) => [u * d.w, v * d.h]))); } catch (_) {}
+    return {
+      version: (APP_VERSION || '?') + ' ' + BUILD,
+      geraet: ((navigator.userAgent.match(/\(([^)]*)\)/) || [])[1] || '').slice(0, 60),
+      kamera: stream ? vw + '×' + vh : 'aus',
+      status: lastStatusText,
+      scheibe: d.H ? (d.lost ? 'verloren' : 'erkannt') : 'gesucht',
+      qualitaet: r3(d.quality),
+      zwanzig: dir20 == null ? null : dir20 + '° (0 = oben im Bild)',
+      ausrichtung: lastOrient ? lastOrient.how + (lastOrient.up != null ? ' (Sensor ' + Math.round(lastOrient.up) + '°)' : '') : '-',
+      sensor: upAngle() == null ? (grav.v ? 'flach/bewegt' : 'keine Daten') : Math.round(upAngle()) + '°',
+      selbst20: !!d.userOriented,
+      zoom: zoom.z.toFixed(2) + '× (Optik ' + (d.hz || 1).toFixed(2) + ')',
+      ausschnitt: [r3(d.view.x), r3(d.view.y), r3(d.view.w), r3(d.view.h)],
+      verarbeit: d.w + '×' + d.h,
+      tickMs: d.tickMs == null ? null : Math.round(d.tickMs * 10) / 10,
+      phase: d.phase + (d.awaitClear ? ' (wartet auf Ziehen)' : '') + ' · Pfeile ' + (d.turnDarts || 0),
+      ziehen: d.lastClear || '-',
+      mikro: micOn ? (pausedForSpeech ? 'Pause (Ansage)' : listening ? 'hört zu' : 'startet') : 'aus',
+      kalib: d.calib ? d.calib.map(([u, v]) => [r3(u), r3(v)]) : null,
+    };
+  };
 
   // Wie genau kann diese Kameraposition messen? Anzeige + konkreter Tipp
   function showQuality(withToast) {

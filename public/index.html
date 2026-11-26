@@ -363,6 +363,7 @@
         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>
       </button>
       <button class="btn" id="b-cam-off">Kamera aus</button>
+      <button class="btn wide hidden" id="b-restart">Kamera neu starten</button>
     </div>
     <div class="cam-tools hidden" id="calib-tools">
       <button class="btn" id="c-auto">Neu suchen</button>
@@ -429,6 +430,7 @@
       <h3 class="dlg-sub">Erkennung verbessern</h3>
       <p class="muted small">Jeder Pfeil, den du korrigierst, wird mit Bildausschnitt gespeichert. Schick die Datei an den Entwickler – damit lässt sich die Erkennung an echten Bildern verbessern. Außerdem lernt die App selbst aus deinen Korrekturen, wenn die Spitze immer wieder zu kurz erkannt wird.</p>
       <button type="button" class="btn" id="s-report">Erkennungsprotokoll herunterladen (<span id="s-report-n">0</span>)</button>
+      <p class="muted small" id="s-version"></p>
       <div class="row3"><span></span><span></span><button value="ok" class="btn cta">Fertig</button></div>
     </form>
   </dialog>

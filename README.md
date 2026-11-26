@@ -31,6 +31,14 @@ Dazu Statistik (Heatmap, Felder, Average, Doppelquote …), Konten per Google od
 | `firestore.rules` | Sicherheitsregeln für die Datenbank (in Firebase einfügen) |
 | `test/` | `npm test`: Regeln, Erkennung, Pfeile ziehen, Online, Turniere, Kopplung, 2 Kameras, Anmeldung, Lernpfad, Sprachbefehle |
 
+## Neu in Version 2.2
+
+- **Immer die neueste Version:** Safari am iPhone hat offene Tabs mit der alten Version weiterlaufen lassen. Jetzt lädt die Seite alle Dateien mit Versionskennung, fragt alle 5 Minuten und beim Zurückkehren in die App nach einer neuen Version und lädt sich dann selbst neu (im laufenden Spiel erscheint nur ein Hinweis „Jetzt laden“). Die Version steht unten in den Einstellungen.
+- **Im Spiel unter der Kamera nur noch ein Knopf: „Kamera neu starten“.** Alles andere (Kalibrieren, Zoom, Debug, Einstellungen, Kamera aus) gibt es nur unter **Kamera einrichten**.
+- **Auto-Zoom nur digital:** Die Optik des Handys wird nie automatisch umgeschaltet (das ließ das Bild hängen und verstellte Schärfe/Belichtung).
+- **20 per Neigung des Handys:** Statt einer Kamera-Lageschätzung wird nur die Neigung aus dem Lagesensor genutzt. Das ist robuster und braucht keine Brennweite.
+- **Diagnose am Laptop:** `…/?bildschirm&diagnose` öffnen und das Handy koppeln. Dann zeigt der Laptop alle Messwerte des Handys (Kalibrierung, 20-Richtung, Zoom, Sensor, Rechenzeit, Mikro).
+
 ## Neu in Version 2.1
 
 - **Raster nicht mehr verdreht (18 auf der 20):** Die gespeicherte Kalibrierung vom letzten Mal wird beim Kamerastart nicht mehr blind übernommen. Die Scheibe wird frisch gesucht und verglichen. Wo die 20 ist, sagt der **Lagesensor des Handys** (die Scheibe hängt mit der 20 nach oben), auch wenn das Handy schräg steht. Ohne Sensor gilt „oben im Bild“. Hat man die 20 beim Einrichten selbst angetippt, merkt sich die App das.
