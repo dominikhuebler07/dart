@@ -342,4 +342,5 @@ ok(bad === 0, 'Sprachbefehle (Wert, mehrere, unscharf) ' + (cases.length + 1 - b
 
 }
 console.log(`${pass} Tests bestanden (inkl. Sprachbefehle v2)`);
-require('./learn.js'); require('./tourn.js'); require('./wake.js'); require('./pull.js'); require('./auth.js'); require('./fuse.js'); require('./reports.js');
+require('./learn.js'); require('./tourn.js'); require('./wake.js'); require('./pull.js');
+require('./field.js'); require('./auth.js'); require('./fuse.js'); require('./reports.js');

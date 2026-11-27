@@ -249,6 +249,112 @@
         this.emptyRef = null;
       }
       if (this.w && this.H) this.buildMask();
+      if (this.w && this.H && !keepRefs) this.checkFieldRef();
+    }
+
+    // ---------- Pfeilrichtung (Spitze -> Flight) aus echten Würfen lernen ----------
+    // Aus der Kalibrierung allein lässt sich die Kameraposition oft nicht sicher bestimmen (Handy weit weg, nur
+    // leicht schräg): Dann sagt das Kameramodell die Richtung, in die ein Pfeil im Bild aus der Scheibe ragt, falsch
+    // voraus – im schlimmsten Fall genau verkehrt herum, und der Flight wird für die Spitze gehalten.
+    // Deshalb merkt sich die App bei jedem eindeutigen Pfeil (breiter Flight an einem Ende, dünne Spitze am anderen)
+    // die echte Richtung. Ab 3 Pfeilen gilt das Gelernte. Gespeichert in „Sensor-Koordinaten“ (ganzes Kamerabild,
+    // unabhängig vom Zoom), damit es Zoom-Änderungen übersteht.
+    toSensor(x, y) {
+      const v = this.view, hz = this.hz || 1, A = (this.w * v.h) / (this.h * v.w);
+      return [(0.5 + (v.x + ((x + 0.5) / this.w) * v.w - 0.5) / hz) * A, 0.5 + (v.y + ((y + 0.5) / this.h) * v.h - 0.5) / hz];
+    }
+    sensorPerPx() { return this.view.h / ((this.hz || 1) * this.h); }
+    boardRefSensor() {
+      const c = applyH(this.Hinv, 0, 0), e = applyH(this.Hinv, 170, 0), f = applyH(this.Hinv, 0, 170);
+      const C = this.toSensor(c[0] * this.w - 0.5, c[1] * this.h - 0.5);
+      const E = this.toSensor(e[0] * this.w - 0.5, e[1] * this.h - 0.5), G = this.toSensor(f[0] * this.w - 0.5, f[1] * this.h - 0.5);
+      return { cx: C[0], cy: C[1], r: (Math.hypot(E[0] - C[0], E[1] - C[1]) + Math.hypot(G[0] - C[0], G[1] - C[1])) / 2 };
+    }
+    // neue Kalibrierung: steht die Kamera woanders, gilt das Gelernte nicht mehr
+    checkFieldRef() {
+      const R = this.boardRefSensor();
+      const F0 = this.field;
+      if (F0 && F0.ref && Math.hypot(R.cx - F0.ref.cx, R.cy - F0.ref.cy) < 0.04 && Math.abs(R.r / F0.ref.r - 1) < 0.08) return;
+      this.field = { obs: [], fit: null, conflicts: 0, ref: R };
+    }
+    exportField() { return this.field ? { obs: this.field.obs, ref: this.field.ref } : null; }
+    importField(f) {
+      if (!f || !Array.isArray(f.obs) || !f.ref) return;
+      this.field = { obs: f.obs.slice(-16), fit: null, conflicts: 0, ref: f.ref };
+      if (this.H && this.w) this.checkFieldRef();
+      this.fitField();
+    }
+    learnFlight(tip, fdir, Lpx) {
+      if (!this.H || !this.w) return;
+      if (!this.field) this.checkFieldRef();
+      const F0 = this.field;
+      const pred = this.fieldDirAt(tip[0], tip[1]);
+      if (pred && pred[0] * fdir[0] + pred[1] * fdir[1] < 0.5) {
+        // Gelerntes passt nicht mehr (Kamera bewegt?) -> nach mehreren Widersprüchen neu lernen
+        if (++F0.conflicts >= 3) { F0.obs = []; F0.conflicts = 0; }
+      } else F0.conflicts = Math.max(0, F0.conflicts - 1);
+      const [X, Y] = this.toSensor(tip[0], tip[1]);
+      F0.obs.push({ X: +X.toFixed(4), Y: +Y.toFixed(4), dx: +fdir[0].toFixed(3), dy: +fdir[1].toFixed(3), L: +(Lpx * this.sensorPerPx()).toFixed(4) });
+      if (F0.obs.length > 16) F0.obs.shift();
+      this.fitField();
+      this.cb.onField && this.cb.onField(this.exportField());
+    }
+    fitField() {
+      const F0 = this.field;
+      if (!F0) return;
+      let use = F0.obs.filter((o) => Number.isFinite(o.dx));
+      F0.fit = null;
+      if (use.length < 3) return;
+      let fit = null;
+      for (let iter = 0; iter < 3; iter++) {
+        let sx = 0, sy = 0, a = 0, b = 0, c = 0, u = 0, v = 0, mx = 0, my = 0;
+        for (const o of use) {
+          sx += o.dx; sy += o.dy; mx += o.X; my += o.Y;
+          const n0 = -o.dy, n1 = o.dx, k = n0 * o.X + n1 * o.Y;
+          a += n0 * n0; b += n0 * n1; c += n1 * n1; u += n0 * k; v += n1 * k;
+        }
+        const ml = Math.hypot(sx, sy) || 1, md = [sx / ml, sy / ml];
+        mx /= use.length; my /= use.length;
+        let spread = 0;
+        for (const o of use) spread += (o.X - mx) ** 2 + (o.Y - my) ** 2;
+        spread = Math.sqrt(spread / use.length);
+        // Fluchtpunkt der Pfeile nur, wenn die Würfe über die Scheibe verteilt sind und die Richtungen sich klar ändern;
+        // sonst (Kamera weit weg, Würfe nah beisammen) ist eine gemeinsame Richtung genauer
+        const det = a * c - b * b, minEig = (a + c) / 2 - Math.sqrt(((a - c) / 2) ** 2 + b * b);
+        let V = null, sgn = 1;
+        if (use.length >= 5 && spread > 0.06 && minEig > 0.06 * use.length && Math.abs(det) > 1e-9) {
+          V = [(c * u - b * v) / det, (a * v - b * u) / det];
+          if (Math.hypot(V[0] - mx, V[1] - my) > 6) V = null;
+          else { let s1 = 0; for (const o of use) s1 += Math.sign(o.dx * (V[0] - o.X) + o.dy * (V[1] - o.Y)); sgn = s1 >= 0 ? 1 : -1; }
+        }
+        const Ls = use.map((o) => o.L).filter((x) => x > 0).sort((p, q) => p - q);
+        fit = { V, sgn, md, L: Ls.length ? Ls[Ls.length >> 1] : null, n: use.length };
+        const predict = (o) => { if (!V) return md; const dx = V[0] - o.X, dy = V[1] - o.Y, l = Math.hypot(dx, dy) || 1; return [(sgn * dx) / l, (sgn * dy) / l]; };
+        const keep = use.filter((o) => { const p = predict(o); return p[0] * o.dx + p[1] * o.dy > 0.82; }); // < ~35° Abweichung
+        if (keep.length === use.length || keep.length < 3) break;
+        use = keep;
+      }
+      F0.fit = fit;
+    }
+    // gelernte Richtung (Einheitsvektor im Bild, Spitze -> Flight) an einer Bildstelle, oder null
+    fieldDirAt(x, y) {
+      const fit = this.field && this.field.fit;
+      if (!fit) return null;
+      if (!fit.V) return fit.md;
+      const [X, Y] = this.toSensor(x, y), dx = fit.V[0] - X, dy = fit.V[1] - Y, l = Math.hypot(dx, dy);
+      if (l < 0.05) return fit.md;
+      return [(fit.sgn * dx) / l, (fit.sgn * dy) / l];
+    }
+    // Pfeil-Vektor (Pixel) an einer Bildstelle: Richtung gelernt (sonst Kameramodell), Länge vom Modell bzw. gelernt
+    flightAt(x, y, len = 110) {
+      let m = null;
+      if (this.cam) { const [bx, by] = applyH(this.H, (x + 0.5) / this.w, (y + 0.5) / this.h); m = this.cam.flightDir(bx, by, len); }
+      const f = this.fieldDirAt(x, y);
+      if (!f) return m;
+      let L = m ? Math.hypot(m[0], m[1]) : len * this.scaleAt(x, y);
+      const fit = this.field.fit;
+      if (fit.L && len >= 100) L = Math.max(L, (fit.L / this.sensorPerPx()) * 1.1); // nie kürzer als echte Pfeile
+      return [f[0] * L, f[1] * L];
     }
 
     // Kalibrierung um (dx, dy) Pixel verschieben (gemessene Erschütterung). Referenzbilder bleiben, wie sie sind:
@@ -1000,9 +1106,8 @@
           const sc = this.scaleAt(P.mx, P.my);
           // erwartete Pfeilrichtung (Spitze -> Flight) aus dem Kameramodell
           let fl = null, expLen = 110 * sc;
-          if (this.cam) {
-            const [bx, by] = applyH(this.H, (P.mx + 0.5) / w, (P.my + 0.5) / h);
-            const e = this.cam.flightDir(bx, by, 110), el = Math.hypot(e[0], e[1]);
+          {
+            const e = this.flightAt(P.mx, P.my, 110), el = e ? Math.hypot(e[0], e[1]) : 0;
             if (el > 3) { fl = [e[0] / el, e[1] / el]; expLen = el; }
           }
           let dir = P.dir, ctr = [P.mx, P.my];
@@ -1065,11 +1170,10 @@
       const width = pix.length / Math.max(1, L);
       // erwartete Länge eines Pfeils an dieser Stelle (Kameramodell, Pfeil ~ senkrecht)
       let flight = null, expLen = 110 * sc, ptPx = 16 * sc;
-      if (this.cam) {
-        const [bx, by] = applyH(this.H, (cx + 0.5) / w, (cy + 0.5) / h);
-        const e = this.cam.flightDir(bx, by, 110);
-        expLen = Math.hypot(e[0], e[1]);
-        if (expLen > 3) flight = [e[0] / expLen, e[1] / expLen];
+      const learned = this.fieldDirAt(cx, cy);
+      {
+        const e = this.flightAt(cx, cy, 110);
+        if (e) { expLen = Math.hypot(e[0], e[1]); if (expLen > 3) flight = [e[0] / expLen, e[1] / expLen]; }
       }
       // --- Plausibilität ---
       if (L < 5 * sc && pix.length < 60) return { reject: 'zu klein' };
@@ -1088,17 +1192,23 @@
       }
       // --- Richtung: Spitze am Ende Richtung Scheibe ---
       let tipLow; // true: Spitze am Ende mit kleinem t
+      // Form: der Flight ist das breite Ende, die Spitze das schmale
+      const band = 0.25 * L;
+      const cnt = (lo, hi) => { let k = 0; for (const p of pix) { const t = ((p % w) - ax.o[0]) * dir[0] + (((p / w) | 0) - ax.o[1]) * dir[1]; if (t >= lo && t <= hi) k++; } return k; };
+      const nLow = cnt(tmin, tmin + band), nHigh = cnt(tmax - band, tmax);
+      const shapeTipLow = nLow <= nHigh;
+      const shapeConf = (Math.max(nLow, nHigh) + 1) / (Math.min(nLow, nHigh) + 1) >= 1.8 && L >= 28 * sc;
+      const dotL = learned ? dir[0] * learned[0] + dir[1] * learned[1] : 0;
+      const dotM = flight ? dir[0] * flight[0] + dir[1] * flight[1] : 0;
+      let by = 'form';
       if (this.tipMode === 'lowest' || this.tipMode === 'highest') {
         const yLow = ax.o[1] + dir[1] * tmin, yHigh = ax.o[1] + dir[1] * tmax;
-        tipLow = this.tipMode === 'lowest' ? yLow > yHigh : yLow < yHigh;
-      } else if (flight && Math.abs(dir[0] * flight[0] + dir[1] * flight[1]) > 0.35) {
-        tipLow = dir[0] * flight[0] + dir[1] * flight[1] > 0; // Flight liegt in +Richtung -> Spitze bei tmin
-      } else {
-        // Fallback: schmales Ende ist die Spitze
-        const band = 0.25 * L;
-        const cnt = (lo, hi) => { let k = 0; for (const p of pix) { const t = ((p % w) - ax.o[0]) * dir[0] + (((p / w) | 0) - ax.o[1]) * dir[1]; if (t >= lo && t <= hi) k++; } return k; };
-        tipLow = cnt(tmin, tmin + band) <= cnt(tmax - band, tmax);
-      }
+        tipLow = this.tipMode === 'lowest' ? yLow > yHigh : yLow < yHigh; by = 'einstellung';
+      } else if (learned && Math.abs(dotL) > 0.3) { tipLow = dotL > 0; by = 'gelernt'; } // Flight in +Richtung -> Spitze bei tmin
+      else if (shapeConf) tipLow = shapeTipLow;
+      else if (flight && Math.abs(dotM) > 0.35) { tipLow = dotM > 0; by = 'modell'; }
+      else tipLow = shapeTipLow;
+      this.lastBy = by;
       const s = tipLow ? -1 : 1; // Laufrichtung zur Spitze
       // Front: äußerster Punkt nahe der Achse
       let front = tipLow ? Infinity : -Infinity;
@@ -1120,7 +1230,10 @@
       const tipT = this.refineTip(ax.o, dir, front + s * ext, lat, s, d.C);
       const tx = ax.o[0] + dir[0] * tipT - dir[1] * lat, ty = ax.o[1] + dir[1] * tipT + dir[0] * lat;
       this.lastAnalyze = (this.lastAnalyze || '') + ` [n=${pix.length} L=${L.toFixed(0)} exp=${expLen.toFixed(0)} front=${(ax.o[0] + dir[0] * front).toFixed(0)},${(ax.o[1] + dir[1] * front).toFixed(0)} ext=${ext.toFixed(1)}/${Math.max(6, 1.7 * ptPx + 4).toFixed(0)} tip=${tx.toFixed(0)},${ty.toFixed(0)}]`;
-      return { tip: [tx, ty], tipDir: [dir[0] * s, dir[1] * s], pix, L, width, expLen, ext, sc };
+      // eindeutige Form (und nicht im Widerspruch zum Gelernten) -> echte Richtung merken
+      const learnable = shapeConf && by !== 'einstellung' && shapeTipLow === tipLow;
+      const shapeFlight = shapeTipLow ? [dir[0], dir[1]] : [-dir[0], -dir[1]]; // Spitze -> Flight laut Form
+      return { tip: [tx, ty], tipDir: [dir[0] * s, dir[1] * s], pix, L, width, expLen, ext, sc, by, learnable, shapeConf, shapeFlight };
     }
 
     // Unterschied an einer beliebigen (Sub-Pixel-)Stelle, bilinear aus den 4 Nachbarpixeln
@@ -1344,6 +1457,7 @@
         dart.cid = this.capture(r.tip, Board.label(dart), fx, fy);
         emitted.push({ dart, u, v, pix: r.pix });
         emittedAny = true;
+        if (r.shapeConf && r.by !== 'einstellung') this.learnFlight(r.tip, r.shapeFlight, r.L); // Richtung laut Form
       }
       this.ref = this.snapRef();
       this.exclude = null;
@@ -1373,8 +1487,16 @@
           before[o] = before[o + 1] = before[o + 2] = g; before[o + 3] = 255;
           after[o] = this.rgba[i * 4]; after[o + 1] = this.rgba[i * 4 + 1]; after[o + 2] = this.rgba[i * 4 + 2]; after[o + 3] = 255;
         }
-        (this.captures || (this.captures = [])).push({ id, label, x, y, tip: [cx, cy], size: 2 * R, before, after, t: Date.now() });
+        const cap = { id, label, x, y, tip: [cx, cy], size: 2 * R, before, after, t: Date.now(), by: this.lastBy || null, frame: { w, h } };
+        (this.captures || (this.captures = [])).push(cap);
         if (this.captures.length > 8) this.captures.shift();
+        // ganzes Kamerabild dieses Wurfs (für das Erkennungsprotokoll, falls der Pfeil korrigiert wird)
+        if (typeof document !== 'undefined' && this.rgba && this.rgba.length === w * h * 4) {
+          const c = this.shotCanvas || (this.shotCanvas = document.createElement('canvas'));
+          if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+          c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(this.rgba), w, h), 0, 0);
+          if (c.toBlob) c.toBlob((b) => { cap.shot = b; }, 'image/jpeg', 0.85);
+        }
       } catch (_) {}
       return id;
     }

@@ -237,26 +237,62 @@
   window.DS_correct = correctDart;
 
   // ---------- Erkennungsprotokoll (zum Verbessern der Erkennung mit echten Bildern) ----------
-  const reports = [];
-  function addReport(old, d) {
-    const cap = detector.captures && detector.captures.find((c) => c.id === old.cid);
-    reports.push({ t: new Date().toISOString(), detected: B.label(old), corrected: B.label(d), x: old.x, y: old.y, bdir: old.bdir, bias: detector.tipBias || 0, cap });
-    if (reports.length > 40) reports.shift();
-    $('#s-report-n').textContent = reports.length;
+  // Jeder korrigierte Pfeil wird mit dem ganzen Kamerabild des Wurfs gespeichert (im Browser, übersteht Neuladen).
+  // Unter Kamera einrichten → Einstellungen herunterladen und an den Entwickler schicken.
+  const RepDB = (() => {
+    let dbp = null;
+    const open = () => dbp || (dbp = new Promise((res, rej) => {
+      const r = indexedDB.open('dartscan', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('reports', { keyPath: 'id', autoIncrement: true });
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    }));
+    const run = async (mode, fn) => {
+      const db = await open();
+      return new Promise((res, rej) => {
+        const t = db.transaction('reports', mode), req = fn(t.objectStore('reports'));
+        t.oncomplete = () => res(req && 'result' in req ? req.result : undefined); t.onerror = () => rej(t.error);
+      });
+    };
+    return {
+      add: (o) => run('readwrite', (st) => st.add(o)),
+      all: () => run('readonly', (st) => st.getAll()),
+      count: () => run('readonly', (st) => st.count()),
+      clear: () => run('readwrite', (st) => st.clear()),
+      del: (id) => run('readwrite', (st) => st.delete(id)),
+    };
+  })();
+  const reportsMem = []; // Ersatz, falls der Browser keine Datenbank erlaubt
+  function updateReportCount() {
+    RepDB.count().then((n) => { $('#s-report-n').textContent = n; }).catch(() => { $('#s-report-n').textContent = reportsMem.length; });
   }
   function toPng(arr, size) {
     const c = document.createElement('canvas'); c.width = size; c.height = size;
     const x = c.getContext('2d'); const im = x.createImageData(size, size); im.data.set(arr); x.putImageData(im, 0, 0);
     return c.toDataURL('image/png');
   }
-  function downloadReport() {
-    if (!reports.length) return toast('Noch keine korrigierten Würfe – korrigiere falsch erkannte Pfeile, dann landen sie hier.');
-    const q = detector.qualityInfo();
-    const out = {
-      app: 'DartScan', created: new Date().toISOString(), ua: navigator.userAgent,
-      setup: { calib: detector.calib, view: detector.view, hz: detector.hz, w: detector.w, h: detector.h, threshold: detector.threshold, tipBias: detector.tipBias || 0, quality: q },
-      entries: reports.map((r) => ({ ...r, cap: r.cap ? { tip: r.cap.tip, before: toPng(r.cap.before, r.cap.size), after: toPng(r.cap.after, r.cap.size) } : null })),
+  function addReport(old, d) {
+    const cap = detector.captures && detector.captures.find((c) => c.id === old.cid);
+    const entry = {
+      t: new Date().toISOString(), detected: B.label(old), corrected: B.label(d), x: old.x, y: old.y, bdir: old.bdir, bias: detector.tipBias || 0,
+      by: cap ? cap.by : null, tip: cap ? cap.tip : null, frame: cap ? cap.frame : null,
+      crop: cap ? { before: toPng(cap.before, cap.size), after: toPng(cap.after, cap.size) } : null,
+      shot: cap && cap.shot ? cap.shot : null,
+      setup: { calib: detector.calib, view: detector.view, hz: detector.hz, w: detector.w, h: detector.h, field: detector.exportField(), version: APP_VERSION + ' ' + BUILD },
     };
+    RepDB.add(entry).then(async () => {
+      const all = await RepDB.all();
+      for (const r of all.slice(0, Math.max(0, all.length - 30))) await RepDB.del(r.id); // die neuesten 30 behalten
+      updateReportCount();
+    }).catch(() => { reportsMem.push(entry); if (reportsMem.length > 30) reportsMem.shift(); updateReportCount(); });
+  }
+  const blobUrl = (b) => new Promise((res) => { if (!b) return res(null); const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => res(null); r.readAsDataURL(b); });
+  async function downloadReport() {
+    let list = [];
+    try { list = await RepDB.all(); } catch (_) { list = reportsMem.slice(); }
+    if (!list.length) return toast('Noch keine korrigierten Würfe – korrigiere falsch erkannte Pfeile, dann landen sie hier.');
+    const entries = [];
+    for (const r of list) entries.push({ ...r, shot: await blobUrl(r.shot) });
+    const out = { app: 'DartScan', created: new Date().toISOString(), ua: navigator.userAgent, quality: detector.qualityInfo(), entries };
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([JSON.stringify(out)], { type: 'application/json' }));
     a.download = 'dartscan-protokoll-' + new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-') + '.json';
@@ -682,7 +718,7 @@
     $('#s-autozoom').checked = settings.autoZoom !== false;
     renderVoices();
     $('#s-direct').checked = settings.voiceDirect !== false;
-    $('#s-report-n').textContent = reports.length;
+    updateReportCount();
     $('#dlg-settings').showModal();
   };
   $('#s-thr').oninput = (e) => { settings.threshold = Number(e.target.value); $('#s-thr-v').textContent = settings.threshold; detector.threshold = settings.threshold; saveSettings(); };
@@ -748,6 +784,7 @@
     },
     onLost() { lostSince = Date.now(); toast('Scheibe nicht mehr gefunden – ich suche sie automatisch …', 4000); },
     onShift() { saveCalib(); }, // kleine Erschütterung ausgeglichen
+    onField(f) { LS.set('ds.field', f); }, // gelernte Pfeilrichtung (Spitze -> Flight) bei diesem Aufbau
     onBias(b) {
       saveCalib();
       toast(`Aus deinen Korrekturen gelernt: Pfeilspitze wird jetzt ${Math.abs(b).toFixed(1).replace('.', ',')} mm weiter ${b > 0 ? 'vorne' : 'hinten'} gesucht`, 5000);
@@ -786,6 +823,7 @@
     const old = LS.get('ds.calib', null); // ältere Version
     if (old && old.length === 4) detector.setCalibration(old);
   })();
+  detector.importField(LS.get('ds.field', null));
 
   function syncDetector() {
     if (mode === 'cam2') return; // die 2. Kamera steuert das Haupt-Handy
@@ -1336,6 +1374,8 @@
       tickMs: d.tickMs == null ? null : Math.round(d.tickMs * 10) / 10,
       phase: d.phase + (d.awaitClear ? ' (wartet auf Ziehen)' : '') + ' · Pfeile ' + (d.turnDarts || 0),
       ziehen: d.lastClear || '-',
+      richtung: d.field && d.field.fit ? 'gelernt aus ' + d.field.fit.n + ' Pfeilen' + (d.field.fit.V ? ' (Fluchtpunkt)' : ' (eine Richtung)') : 'Kameramodell (noch ' + Math.max(0, 3 - ((d.field && d.field.obs.length) || 0)) + ' eindeutige Pfeile bis gelernt)',
+      spitze: d.lastBy ? 'letzter Pfeil: Ende bestimmt per ' + d.lastBy : '-',
       mikro: micOn ? (pausedForSpeech ? 'Pause (Ansage)' : listening ? 'hört zu' : 'startet') : 'aus',
       kalib: d.calib ? d.calib.map(([u, v]) => [r3(u), r3(v)]) : null,
     };

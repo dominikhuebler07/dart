@@ -31,6 +31,16 @@ Dazu Statistik (Heatmap, Felder, Average, Doppelquote …), Konten per Google od
 | `firestore.rules` | Sicherheitsregeln für die Datenbank (in Firebase einfügen) |
 | `test/` | `npm test`: Regeln, Erkennung, Pfeile ziehen, Online, Turniere, Kopplung, 2 Kameras, Anmeldung, Lernpfad, Sprachbefehle |
 
+## Neu in Version 2.3
+
+- **Pfeilspitze richtig erkennen, auch wenn die Kamera weiter weg steht:** Die App hat aus der Kalibrierung berechnet, in welche Richtung ein Pfeil im Bild aus der Scheibe ragt. Bei einem Handy, das weiter weg und nur leicht schräg steht, ging das schief, in Teilen der Scheibe sogar genau verkehrt herum. Dann wurde der **Flight für die Spitze** gehalten und z. B. „18“ statt „1“ gelesen. Jetzt gilt:
+  - Das breite Ende (Flight) und das schmale Ende (Spitze) werden am Pfeil selbst erkannt.
+  - Ab 3 eindeutigen Würfen **lernt** die App die echte Richtung bei deinem Aufbau und merkt sie sich.
+  - Steht die Kamera woanders, lernt sie neu.
+  - Im Test: Auch mit völlig falsch berechneter Richtung werden 12 von 12 Würfen quer über die Scheibe richtig gelesen (vorher 0 von 12).
+- **Erkennungsprotokoll mit ganzen Bildern:** Jeder korrigierte Pfeil wird mit dem kompletten Kamerabild des Wurfs gespeichert (die neuesten 30, übersteht Neuladen). Herunterladen unter **Kamera einrichten → ⚙ → Erkennungsprotokoll herunterladen**.
+- **Diagnose:** zeigt jetzt, ob die Pfeilrichtung schon gelernt ist und wie das Ende des letzten Pfeils bestimmt wurde.
+
 ## Neu in Version 2.2
 
 - **Immer die neueste Version:** Safari am iPhone hat offene Tabs mit der alten Version weiterlaufen lassen. Jetzt lädt die Seite alle Dateien mit Versionskennung, fragt alle 5 Minuten und beim Zurückkehren in die App nach einer neuen Version und lädt sich dann selbst neu (im laufenden Spiel erscheint nur ein Hinweis „Jetzt laden“). Die Version steht unten in den Einstellungen.
